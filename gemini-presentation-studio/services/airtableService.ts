@@ -78,8 +78,14 @@ export const saveRecordToAirtable = async (
         lighting?: string;
         camera?: string;
         rawInput?: string;
-        creativeDirection?: string;
         templateId?: string;
+        // Sequence fields
+        sequenceId?: string;
+        sequenceIndex?: number;
+        sequenceTotal?: number;
+        sourcePhotoUrls?: string[];
+        keySubjects?: string;
+        angleDescription?: string;
     }
 ): Promise<string> => {
     const url = `https://api.airtable.com/v0/${config.baseId}/${encodeURIComponent(config.tableName)}`;
@@ -89,8 +95,14 @@ export const saveRecordToAirtable = async (
         raw: data.rawInput,
         lit: data.lighting,
         cam: data.camera,
-        cd: data.creativeDirection,
-        tid: data.templateId
+        tid: data.templateId,
+        // Sequence metadata
+        seqId: data.sequenceId,
+        seqIdx: data.sequenceIndex,
+        seqTot: data.sequenceTotal,
+        srcUrls: data.sourcePhotoUrls,
+        keySub: data.keySubjects,
+        angle: data.angleDescription
     };
     
     const cleanMetadata = Object.fromEntries(Object.entries(metadata).filter(([_, v]) => v != null && v !== ''));
@@ -178,23 +190,29 @@ export const fetchGenerationHistory = async (config: AirtableConfig): Promise<an
 
         return {
             id: r.id,
-            createdTime: r.createdTime, 
+            createdTime: r.createdTime,
             type: (fields.Type || 'image').toLowerCase(),
             topic: fields.Topic || '',
             campaign: fields.Campaign || '',
             isFavorite: fields.Favorite === 'Yes',
             prompt: displayPrompt,
-            imageUrl: imageUrl, 
+            imageUrl: imageUrl,
             videoUrl: videoUrl,
             aspectRatio: fields.AspectRatio,
             resolution: fields.Resolution,
+            // Sequence fields
+            sequenceId: extendedMetadata.seqId,
+            sequenceIndex: extendedMetadata.seqIdx,
+            sequenceTotal: extendedMetadata.seqTot,
+            sourcePhotoUrls: extendedMetadata.srcUrls,
+            keySubjects: extendedMetadata.keySub,
+            angleDescription: extendedMetadata.angle,
             metadata: {
                 style: fields.Style,
                 layout: fields.Layout,
                 lighting: extendedMetadata.lit,
                 camera: extendedMetadata.cam,
                 rawInput: extendedMetadata.raw,
-                creativeDirection: extendedMetadata.cd,
                 templateId: extendedMetadata.tid
             }
         };

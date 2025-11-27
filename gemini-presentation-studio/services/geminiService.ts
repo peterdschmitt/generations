@@ -5,6 +5,9 @@ const getAiClient = () => {
   if (!process.env.API_KEY) {
     throw new Error("API_KEY environment variable not set. Please configure it in your environment.");
   }
+  // Debug: Log first/last 4 chars of API key
+  const key = process.env.API_KEY;
+  console.log(`[DEBUG] Using API key: ${key.substring(0, 8)}...${key.substring(key.length - 4)}`);
   return new GoogleGenAI({ apiKey: process.env.API_KEY });
 }
 
@@ -51,7 +54,7 @@ export const editImageWithPrompt = async (
         aspectRatio: aspectRatio,
         imageSize: imageSize
       },
-      responseModalities: [Modality.IMAGE],
+      responseModalities: [Modality.TEXT, Modality.IMAGE],
     },
   });
 
@@ -79,7 +82,7 @@ export const generateImageFromPrompt = async (
         aspectRatio: aspectRatio,
         imageSize: imageSize
       },
-      responseModalities: [Modality.IMAGE],
+      responseModalities: [Modality.TEXT, Modality.IMAGE],
     },
   });
 
@@ -137,6 +140,71 @@ export const getSuggestionsForImage = async (
   return [];
 };
 
+
+// Generate image using multiple source photos as reference
+export const generateWithMultipleImages = async (
+  sourceImages: Array<{ base64Data: string; mimeType: string }>,
+  prompt: string,
+  aspectRatio: string = "1:1",
+  imageSize: string = "1K"
+): Promise<string> => {
+  const ai = getAiClient();
+
+  // Build parts array with all source images first, then the text prompt
+  const parts: any[] = [];
+
+  // Add each source image as a part
+  for (const img of sourceImages) {
+    parts.push({
+      inlineData: {
+        data: img.base64Data,
+        mimeType: img.mimeType,
+      },
+    });
+  }
+
+  // Add the text prompt as the final part
+  parts.push({ text: prompt });
+
+  const response = await ai.models.generateContent({
+    model: 'gemini-3-pro-image-preview',
+    contents: {
+      parts: parts,
+    },
+    config: {
+      imageConfig: {
+        aspectRatio: aspectRatio,
+        imageSize: imageSize
+      },
+      responseModalities: [Modality.TEXT, Modality.IMAGE],
+    },
+  });
+
+  return processImageResponse(response);
+};
+
+// Helper to fetch image from URL and convert to base64
+export const fetchImageAsBase64 = async (imageUrl: string): Promise<{ base64Data: string; mimeType: string }> => {
+  const response = await fetch(imageUrl);
+  if (!response.ok) {
+    throw new Error(`Failed to fetch image: ${response.statusText}`);
+  }
+
+  const blob = await response.blob();
+  const mimeType = blob.type || 'image/png';
+
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onloadend = () => {
+      const dataUrl = reader.result as string;
+      // Extract base64 data without the data URL prefix
+      const base64Data = dataUrl.split(',')[1];
+      resolve({ base64Data, mimeType });
+    };
+    reader.onerror = reject;
+    reader.readAsDataURL(blob);
+  });
+};
 
 export const generateVideoFromPrompt = async (
   prompt: string,

@@ -1,8 +1,9 @@
 
 import React, { useState, ChangeEvent, useEffect, useCallback, useRef } from 'react';
-import { editImageWithPrompt, generateImageFromPrompt, getSuggestionsForImage, generateVideoFromPrompt } from './services/geminiService';
+import { editImageWithPrompt, generateImageFromPrompt, getSuggestionsForImage, generateVideoFromPrompt, generateWithMultipleImages, fetchImageAsBase64 } from './services/geminiService';
 import { saveRecordToAirtable, fetchGenerationHistory, AirtableConfig, fetchControls, ControlRecord } from './services/airtableService';
 import { saveLocalImage, getLocalImage } from './services/dbService';
+import { fetchSourcePhotos, uploadSourcePhoto, deleteSourcePhoto, SourcePhoto } from './services/sourcePhotoService';
 import Spinner from './components/Spinner';
 import Icon from './components/Icon';
 import VideoPlayer from './components/VideoPlayer';
@@ -13,8 +14,13 @@ import TemplateLibraryModal from './components/TemplateLibraryModal';
 import ControlManagerModal from './components/ControlManagerModal';
 import Suggestions from './components/Suggestions';
 import HistoryFeed from './components/HistoryFeed';
-import CreativeDirectionManager from './components/CreativeDirectionManager';
+import SourceLibraryTab from './components/SourceLibraryTab';
+import SourcePhotoPicker from './components/SourcePhotoPicker';
+import SequenceAngleInputs from './components/SequenceAngleInputs';
+import SequenceProgress, { SequenceProgressItem } from './components/SequenceProgress';
+import ShotListPresetPicker from './components/ShotListPresetPicker';
 import { PromptTemplate, TEMPLATE_CATEGORIES } from './data/templates';
+import { ShotListPreset } from './data/shotListPresets';
 
 interface ImageState {
   file: File | null;
@@ -27,25 +33,31 @@ export type HistoryItem = {
   topic: string;
   campaign: string;
   isFavorite: boolean;
-  imageUrl: string | null; 
+  imageUrl: string | null;
   videoUrl?: string | null;
   prompt: string;
   aspectRatio?: string;
   resolution?: string;
-  isLocalOnly?: boolean; 
+  isLocalOnly?: boolean;
+  // Sequence fields
+  sequenceId?: string;
+  sequenceIndex?: number;
+  sequenceTotal?: number;
+  sourcePhotoUrls?: string[];
+  keySubjects?: string;
+  angleDescription?: string;
   metadata?: {
     style?: string;
     layout?: string;
     lighting?: string;
     camera?: string;
     rawInput?: string;
-    creativeDirection?: string;
     templateId?: string;
   }
 }
 
-type View = 'image' | 'video';
-type ImageMode = 'edit' | 'generate';
+type View = 'source' | 'image' | 'video';
+type ImageMode = 'generate' | 'sequence';
 
 // Default Fallbacks
 const DEFAULT_LAYOUTS = [
@@ -77,8 +89,7 @@ const App: React.FC = () => {
   const [visualStyle, setVisualStyle] = useState<string>('');
   const [lighting, setLighting] = useState<string>('');
   const [camera, setCamera] = useState<string>('');
-  const [creativeDirectionPrompt, setCreativeDirectionPrompt] = useState<string>(''); 
-  
+
   // Dynamic Controls State (From Airtable)
   const [layouts, setLayouts] = useState(DEFAULT_LAYOUTS);
   const [styles, setStyles] = useState([{ value: '', label: 'None' }]);
@@ -130,11 +141,32 @@ const App: React.FC = () => {
   const [showTemplateLibrary, setShowTemplateLibrary] = useState(false);
   const [showControlManager, setShowControlManager] = useState(false);
 
+  // Source Photo Library State
+  const [sourcePhotos, setSourcePhotos] = useState<SourcePhoto[]>([]);
+  const [isSourcePhotosLoading, setIsSourcePhotosLoading] = useState(false);
+  const [sourcePhotoError, setSourcePhotoError] = useState<string | null>(null);
+
+  // Sequence Mode State
+  const [selectedSourcePhotos, setSelectedSourcePhotos] = useState<SourcePhoto[]>([]);
+  const [keySubjects, setKeySubjects] = useState('');
+  const [sequenceImageCount, setSequenceImageCount] = useState(3);
+  const [sequenceAngles, setSequenceAngles] = useState<string[]>(['', '', '']);
+  const [sequencePrompt, setSequencePrompt] = useState('');
+  const [isGeneratingSequence, setIsGeneratingSequence] = useState(false);
+  const [sequenceProgress, setSequenceProgress] = useState<SequenceProgressItem[]>([]);
+  const [sequenceProgressMessage, setSequenceProgressMessage] = useState('');
+
+  // Apply shot list preset to sequence settings
+  const handleApplyShotListPreset = (preset: ShotListPreset) => {
+    setSequenceImageCount(preset.shots.length);
+    setSequenceAngles(preset.shots.map(shot => shot.angle));
+  };
+
   // --- Synthesizer Logic ---
   const getConstructedPrompt = useCallback(() => {
     if (view === 'video') return videoPrompt; 
     
-    if (isManualMode || imageMode === 'edit') return userInput;
+    if (isManualMode) return userInput;
 
     let basePrompt = '';
 
@@ -153,11 +185,6 @@ const App: React.FC = () => {
         basePrompt = `${safeLayout} ${safeTopic}: ${userInput.trim()}`.trim();
     }
 
-    if (creativeDirectionPrompt) {
-        if (!basePrompt.endsWith('.')) basePrompt += '.';
-        basePrompt += ` ${creativeDirectionPrompt}`;
-    }
-
     const aesthetics: string[] = [];
     if (visualStyle) aesthetics.push(`Style: ${visualStyle}`);
     if (lighting) aesthetics.push(`Lighting: ${lighting}`);
@@ -169,7 +196,7 @@ const App: React.FC = () => {
     }
 
     return basePrompt;
-  }, [view, isManualMode, imageMode, userInput, layoutStyle, topic, visualStyle, lighting, camera, videoPrompt, selectedTemplate, creativeDirectionPrompt]);
+  }, [view, isManualMode, imageMode, userInput, layoutStyle, topic, visualStyle, lighting, camera, videoPrompt, selectedTemplate]);
 
   const finalPrompt = getConstructedPrompt();
 
@@ -185,12 +212,50 @@ const App: React.FC = () => {
     localStorage.setItem('airtableConfig', JSON.stringify(newConfig));
     loadHistory(newConfig);
     loadDynamicControls(newConfig);
+    loadSourcePhotos(newConfig);
+  };
+
+  const loadSourcePhotos = async (config: AirtableConfig) => {
+    setIsSourcePhotosLoading(true);
+    setSourcePhotoError(null);
+    try {
+      const photos = await fetchSourcePhotos(config);
+      setSourcePhotos(photos);
+    } catch (e: any) {
+      console.error("Failed to load source photos:", e);
+      setSourcePhotoError(e.message || "Failed to load source photos");
+    } finally {
+      setIsSourcePhotosLoading(false);
+    }
+  };
+
+  const handleUploadSourcePhoto = async (name: string, base64Image: string) => {
+    setSourcePhotoError(null);
+    try {
+      const newPhoto = await uploadSourcePhoto(airtableConfig, name, base64Image);
+      setSourcePhotos(prev => [newPhoto, ...prev]);
+    } catch (e: any) {
+      setSourcePhotoError(e.message || "Failed to upload photo");
+      throw e;
+    }
+  };
+
+  const handleDeleteSourcePhoto = async (id: string) => {
+    try {
+      await deleteSourcePhoto(airtableConfig, id);
+      setSourcePhotos(prev => prev.filter(p => p.id !== id));
+      // Also remove from selected if it was selected
+      setSelectedSourcePhotos(prev => prev.filter(p => p.id !== id));
+    } catch (e: any) {
+      setSourcePhotoError(e.message || "Failed to delete photo");
+    }
   };
 
   useEffect(() => {
     checkApiKey();
     loadHistory(airtableConfig);
     loadDynamicControls(airtableConfig);
+    loadSourcePhotos(airtableConfig);
   }, []);
 
   const loadDynamicControls = async (config: AirtableConfig) => {
@@ -240,7 +305,10 @@ const App: React.FC = () => {
       }
   };
   
-  const currentHistory = history.filter(item => item.type === view);
+  const currentHistory = history.filter(item => {
+    if (view === 'source') return false; // Source Library has no history
+    return item.type === (view === 'image' ? 'image' : 'video');
+  });
   
   // --- Filtering Logic ---
   const uniqueTopics = Array.from(new Set(currentHistory.map(item => item.topic).filter(Boolean)));
@@ -274,7 +342,6 @@ const App: React.FC = () => {
             setter({ file: file, dataUrl: dataUrl });
             setError(null);
             if (isForImageStudio) {
-                setImageMode('edit');
                 setSuggestions([]);
             }
         } else {
@@ -323,14 +390,32 @@ const App: React.FC = () => {
   }, []);
 
   const checkApiKey = async () => {
-    const hasKey = await window.aistudio.hasSelectedApiKey();
-    setIsApiKeySelected(hasKey);
+    try {
+      if (window.aistudio?.hasSelectedApiKey) {
+        const hasKey = await window.aistudio.hasSelectedApiKey();
+        setIsApiKeySelected(hasKey);
+      } else {
+        // Fallback: assume API key is available if aistudio API isn't present
+        setIsApiKeySelected(true);
+      }
+    } catch (e) {
+      console.error("Error checking API key:", e);
+      // Fallback to true to show the button
+      setIsApiKeySelected(true);
+    }
   };
 
   const handleSelectKey = async () => {
-    await window.aistudio.openSelectKey();
-    setIsApiKeySelected(true);
-    setError(null);
+    try {
+      if (window.aistudio?.openSelectKey) {
+        await window.aistudio.openSelectKey();
+      }
+      setIsApiKeySelected(true);
+      setError(null);
+    } catch (e) {
+      console.error("Error selecting API key:", e);
+      setIsApiKeySelected(true);
+    }
   };
 
   const resetImageState = () => {
@@ -342,7 +427,6 @@ const App: React.FC = () => {
 
   const handleImageModeChange = (newMode: ImageMode) => {
     setImageMode(newMode);
-    if (newMode === 'edit') setIsManualMode(true);
     resetImageState();
     setError(null);
     setSuccessMsg(null);
@@ -411,11 +495,7 @@ const App: React.FC = () => {
   const handleGenerateImage = async () => {
     const promptToUse = finalPrompt;
 
-    if (imageMode === 'edit' && (!originalImage.file || !promptToUse.trim())) {
-      setError("Please upload an image and provide an editing prompt.");
-      return;
-    }
-    if (imageMode === 'generate' && !promptToUse.trim()) {
+    if (!promptToUse.trim()) {
       setError("Please provide a prompt to generate an image.");
       return;
     }
@@ -426,23 +506,11 @@ const App: React.FC = () => {
     setSuggestions([]);
 
     try {
-      let resultImageUrl: string;
-      if (imageMode === 'edit' && originalImage.file) {
-        const base64String = await fileToBase64(originalImage.file);
-        resultImageUrl = await editImageWithPrompt(
-          base64String,
-          originalImage.file.type,
-          promptToUse, 
-          imageAspectRatio,
-          imageResolution
-        );
-      } else {
-        resultImageUrl = await generateImageFromPrompt(
-            promptToUse,
-            imageAspectRatio,
-            imageResolution
-        );
-      }
+      const resultImageUrl = await generateImageFromPrompt(
+        promptToUse,
+        imageAspectRatio,
+        imageResolution
+      );
       
       const tempId = `temp-${Date.now()}`;
       const newHistoryItem: HistoryItem = {
@@ -462,7 +530,6 @@ const App: React.FC = () => {
             lighting: lighting,
             camera: camera,
             rawInput: userInput,
-            creativeDirection: creativeDirectionPrompt,
             templateId: selectedTemplate?.id
         }
       };
@@ -527,6 +594,177 @@ const App: React.FC = () => {
         }
 
       } catch(e) { handleApiError(e); } finally { setIsLoading(false); setLoadingMessage(''); }
+  };
+
+  const handleGenerateSequence = async () => {
+    // Validation
+    if (selectedSourcePhotos.length === 0) {
+      setError("Please select at least one source photo from the library.");
+      return;
+    }
+    if (!keySubjects.trim()) {
+      setError("Please describe the key subjects to maintain consistency across images.");
+      return;
+    }
+    if (!sequencePrompt.trim()) {
+      setError("Please provide a scene description for the sequence.");
+      return;
+    }
+    const filledAngles = sequenceAngles.slice(0, sequenceImageCount).filter(a => a.trim());
+    if (filledAngles.length < sequenceImageCount) {
+      setError("Please provide an angle/perspective description for each image in the sequence.");
+      return;
+    }
+
+    setIsGeneratingSequence(true);
+    setError(null);
+    setSuccessMsg(null);
+    setSequenceProgress([]);
+    setSequenceProgressMessage('Preparing source images...');
+
+    const sequenceId = `seq-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
+    const sourceUrls = selectedSourcePhotos.map(p => p.imageUrl);
+
+    try {
+      // Fetch all source images as base64
+      const sourceImagesBase64 = await Promise.all(
+        selectedSourcePhotos.map(photo => fetchImageAsBase64(photo.imageUrl))
+      );
+
+      // Generate each image in sequence
+      for (let i = 0; i < sequenceImageCount; i++) {
+        const angleDesc = sequenceAngles[i];
+
+        // Update progress
+        setSequenceProgress(prev => [
+          ...prev.filter(p => p.index !== i),
+          { index: i, status: 'generating' }
+        ]);
+        setSequenceProgressMessage(`Generating image ${i + 1} of ${sequenceImageCount}...`);
+
+        // Build the sequence-aware prompt
+        const fullPrompt = buildSequencePrompt(
+          keySubjects,
+          angleDesc,
+          i + 1,
+          sequenceImageCount,
+          sequencePrompt
+        );
+
+        try {
+          // Generate the image with multiple source photos
+          const resultImageUrl = await generateWithMultipleImages(
+            sourceImagesBase64,
+            fullPrompt,
+            imageAspectRatio,
+            imageResolution
+          );
+
+          // Create history item for this sequence image
+          const tempId = `temp-${Date.now()}-${i}`;
+          const newHistoryItem: HistoryItem = {
+            id: tempId,
+            type: 'image',
+            topic: topic.trim() || 'Sequence',
+            campaign: campaign.trim() || 'Uncategorized',
+            isFavorite: false,
+            imageUrl: resultImageUrl,
+            prompt: sequencePrompt,
+            aspectRatio: imageAspectRatio,
+            resolution: imageResolution,
+            isLocalOnly: true,
+            sequenceId: sequenceId,
+            sequenceIndex: i + 1,
+            sequenceTotal: sequenceImageCount,
+            sourcePhotoUrls: sourceUrls,
+            keySubjects: keySubjects,
+            angleDescription: angleDesc,
+            metadata: {
+              style: visualStyle || 'Sequence',
+              layout: layoutStyle,
+              lighting: lighting,
+              camera: camera,
+              rawInput: sequencePrompt
+            }
+          };
+
+          // Add to history immediately (streaming display)
+          setHistory(prev => [newHistoryItem, ...prev]);
+          if (i === 0) setCarouselIndex(0);
+
+          // Update progress to completed
+          setSequenceProgress(prev => [
+            ...prev.filter(p => p.index !== i),
+            { index: i, status: 'completed', imageUrl: resultImageUrl }
+          ]);
+
+          // Save to Airtable with sequence metadata
+          const realRecordId = await autoSaveToAirtable(newHistoryItem);
+          const finalId = realRecordId || tempId;
+          await saveLocalImage(finalId, resultImageUrl);
+
+          if (realRecordId) {
+            setHistory(prev => prev.map(item =>
+              item.id === tempId ? { ...item, id: realRecordId } : item
+            ));
+          }
+
+        } catch (imgError: any) {
+          console.error(`Failed to generate image ${i + 1}:`, imgError);
+          setSequenceProgress(prev => [
+            ...prev.filter(p => p.index !== i),
+            { index: i, status: 'error', error: imgError.message }
+          ]);
+          // Continue with next image even if one fails
+        }
+      }
+
+      const completedCount = sequenceProgress.filter(p => p.status === 'completed').length + 1;
+      setSuccessMsg(`Sequence complete! Generated ${completedCount} of ${sequenceImageCount} images.`);
+      setSequenceProgressMessage('');
+
+    } catch (e: any) {
+      handleApiError(e);
+    } finally {
+      setIsGeneratingSequence(false);
+    }
+  };
+
+  // Build a prompt for sequence generation
+  const buildSequencePrompt = (
+    subjects: string,
+    angle: string,
+    index: number,
+    total: number,
+    basePrompt: string
+  ): string => {
+    let prompt = `Analyze the provided reference photos carefully. Use them as inspiration for:
+- Visual style and color palette
+- Subject appearance and characteristics
+- Composition and framing references
+
+IMPORTANT - Maintain consistency for these key subjects across all images:
+${subjects}
+
+This is image ${index} of ${total} in a connected sequence.
+
+Camera angle/perspective for THIS specific image:
+${angle}
+
+Scene description:
+${basePrompt}`;
+
+    // Add aesthetics if set
+    const aesthetics: string[] = [];
+    if (visualStyle) aesthetics.push(`Style: ${visualStyle}`);
+    if (lighting) aesthetics.push(`Lighting: ${lighting}`);
+    if (camera) aesthetics.push(`Camera: ${camera}`);
+
+    if (aesthetics.length > 0) {
+      prompt += `\n\n${aesthetics.join('. ')}.`;
+    }
+
+    return prompt;
   };
 
   const toggleFavorite = (itemId: string) => {
@@ -602,7 +840,7 @@ const App: React.FC = () => {
   const nextItem = () => { if (carouselIndex < currentHistory.length - 1) setCarouselIndex(prev => prev + 1); };
   const prevItem = () => { if (carouselIndex > 0) setCarouselIndex(prev => prev - 1); };
 
-  const isImageButtonDisabled = isLoading || !finalPrompt.trim() || (imageMode === 'edit' && !originalImage.file) || !isApiKeySelected;
+  const isImageButtonDisabled = isLoading || !finalPrompt.trim() || !isApiKeySelected;
   const isVideoButtonDisabled = isLoading || !finalPrompt.trim() || !isApiKeySelected;
 
   const ApiKeyOverlay = () => (
@@ -649,16 +887,33 @@ const App: React.FC = () => {
         </div>
       </header>
       
-      <div className="w-full max-w-xs mb-8 flex justify-center">
+      <div className="w-full max-w-md mb-8 flex justify-center">
         <div className="bg-gray-800 p-1 rounded-lg inline-flex items-center space-x-1 border border-gray-700">
-          <button onClick={() => setView('image')} className={`px-6 py-2 rounded-md text-sm font-medium transition-all ${view === 'image' ? 'bg-primary text-white shadow-lg' : 'text-gray-400 hover:text-white'}`}>Image Studio</button>
-          <button onClick={() => setView('video')} className={`px-6 py-2 rounded-md text-sm font-medium transition-all ${view === 'video' ? 'bg-primary text-white shadow-lg' : 'text-gray-400 hover:text-white'}`}>Video Studio</button>
+          <button onClick={() => setView('source')} className={`px-4 py-2 rounded-md text-sm font-medium transition-all ${view === 'source' ? 'bg-primary text-white shadow-lg' : 'text-gray-400 hover:text-white'}`}>Source Library</button>
+          <button onClick={() => setView('image')} className={`px-4 py-2 rounded-md text-sm font-medium transition-all ${view === 'image' ? 'bg-primary text-white shadow-lg' : 'text-gray-400 hover:text-white'}`}>Image Studio</button>
+          <button onClick={() => setView('video')} className={`px-4 py-2 rounded-md text-sm font-medium transition-all ${view === 'video' ? 'bg-primary text-white shadow-lg' : 'text-gray-400 hover:text-white'}`}>Video Studio</button>
         </div>
       </div>
 
+      {/* Source Library Tab - Full Width */}
+      {view === 'source' && (
+        <div className="w-full max-w-6xl">
+          <SourceLibraryTab
+            sourcePhotos={sourcePhotos}
+            isLoading={isSourcePhotosLoading}
+            onUpload={handleUploadSourcePhoto}
+            onDelete={handleDeleteSourcePhoto}
+            onRefresh={() => loadSourcePhotos(airtableConfig)}
+            error={sourcePhotoError}
+          />
+        </div>
+      )}
+
+      {/* Image & Video Studio Layout */}
+      {view !== 'source' && (
       <div className="grid grid-cols-1 lg:grid-cols-12 gap-8 w-full max-w-6xl">
         <div className="lg:col-span-4 space-y-6" id="input-panel">
-          
+
           <div className="bg-gray-800/80 p-5 rounded-2xl border border-gray-700 backdrop-blur-sm space-y-4">
              <div className="flex items-center justify-between mb-2">
                  <h2 className="text-sm font-bold text-white uppercase tracking-wider">Project Context</h2>
@@ -673,7 +928,7 @@ const App: React.FC = () => {
             <div className="bg-gray-800/80 p-5 rounded-2xl border border-gray-700 backdrop-blur-sm space-y-5">
               <div className="flex border-b border-gray-700 pb-1">
                 <button onClick={() => handleImageModeChange('generate')} className={`flex-1 pb-3 text-sm font-medium transition-colors ${imageMode === 'generate' ? 'text-primary border-b-2 border-primary' : 'text-gray-400'}`}>Generate</button>
-                <button onClick={() => handleImageModeChange('edit')} className={`flex-1 pb-3 text-sm font-medium transition-colors ${imageMode === 'edit' ? 'text-primary border-b-2 border-primary' : 'text-gray-400'}`}>Edit / Remix</button>
+                <button onClick={() => handleImageModeChange('sequence')} className={`flex-1 pb-3 text-sm font-medium transition-colors ${imageMode === 'sequence' ? 'text-primary border-b-2 border-primary' : 'text-gray-400'}`}>Sequence</button>
               </div>
               
               {imageMode === 'generate' && !isManualMode && (
@@ -692,51 +947,153 @@ const App: React.FC = () => {
                              <ControlSelect label="Camera/Lens" value={camera} onChange={setCamera} options={cameraOpts} />
                          </div>
                      </div>
-
-                     <div className="bg-primary/10 border border-primary/30 p-3 rounded-lg flex items-center justify-between">
-                         <div className="overflow-hidden mr-2">
-                             <span className="block text-[10px] text-primary-light font-bold uppercase tracking-wider">Active Prompt Structure</span>
-                             <span className="block text-sm text-white truncate font-medium">
-                                {selectedTemplate ? selectedTemplate.title : "Freeform (No Template)"}
-                             </span>
-                         </div>
-                         <button onClick={() => setShowTemplateLibrary(true)} className="text-xs bg-primary hover:bg-primary-hover text-white px-3 py-1.5 rounded-md font-bold whitespace-nowrap transition-colors">
-                            Change
-                         </button>
-                     </div>
                   </>
               )}
 
-              {imageMode === 'edit' && (
-                <div className="h-40">
-                  <ImageDropzone
-                    imageState={originalImage}
-                    onFileSelect={(file) => processAndSetImage(file, setOriginalImage, true)}
-                    onRemove={() => setOriginalImage({ file: null, dataUrl: null })}
-                    placeholderLabel="Upload to Edit"
+
+              {/* Sequence Mode UI */}
+              {imageMode === 'sequence' && (
+                <>
+                  {/* Source Photo Picker */}
+                  <SourcePhotoPicker
+                    sourcePhotos={sourcePhotos}
+                    selectedPhotos={selectedSourcePhotos}
+                    onSelectionChange={setSelectedSourcePhotos}
+                    maxSelection={5}
                   />
-                </div>
+
+                  {/* Key Subjects */}
+                  <div>
+                    <label className="text-xs font-semibold text-gray-400 uppercase tracking-wider block mb-2">
+                      Key Subject(s) to Maintain Consistency
+                    </label>
+                    <input
+                      type="text"
+                      value={keySubjects}
+                      onChange={(e) => setKeySubjects(e.target.value)}
+                      placeholder="e.g., red sports car, blonde woman in sunglasses"
+                      className="w-full bg-gray-900 border border-gray-600 rounded-lg px-3 py-2 text-sm text-white focus:ring-1 focus:ring-primary outline-none"
+                    />
+                    <p className="text-xs text-gray-500 mt-1">
+                      Describe characters, objects, or elements that should remain consistent across all images.
+                    </p>
+                  </div>
+
+                  {/* Shot List Preset Picker */}
+                  <div className="flex items-center justify-between">
+                    <ShotListPresetPicker onApply={handleApplyShotListPreset} />
+                    <span className="text-[10px] text-gray-500">or configure manually below</span>
+                  </div>
+
+                  {/* Number of Images */}
+                  <div>
+                    <label className="text-xs font-semibold text-gray-400 uppercase tracking-wider block mb-2">
+                      Number of Images in Sequence
+                    </label>
+                    <select
+                      value={sequenceImageCount}
+                      onChange={(e) => {
+                        const count = parseInt(e.target.value);
+                        setSequenceImageCount(count);
+                        // Adjust angles array
+                        setSequenceAngles(prev => {
+                          const newAngles = [...prev];
+                          while (newAngles.length < count) newAngles.push('');
+                          return newAngles.slice(0, count);
+                        });
+                      }}
+                      className="w-full bg-gray-900 border border-gray-600 rounded-lg px-3 py-2 text-sm text-white focus:ring-1 focus:ring-primary outline-none"
+                    >
+                      {[2, 3, 4, 5, 6, 7, 8, 9, 10].map(n => (
+                        <option key={n} value={n}>{n} images</option>
+                      ))}
+                    </select>
+                  </div>
+
+                  {/* Angle Inputs */}
+                  <SequenceAngleInputs
+                    imageCount={sequenceImageCount}
+                    angles={sequenceAngles}
+                    onAnglesChange={setSequenceAngles}
+                  />
+
+                  {/* Scene Description */}
+                  <div>
+                    <label className="text-xs font-semibold text-gray-400 uppercase tracking-wider block mb-2">
+                      Scene Description
+                    </label>
+                    <textarea
+                      value={sequencePrompt}
+                      onChange={(e) => setSequencePrompt(e.target.value)}
+                      placeholder="Describe the overall scene or scenario for the sequence..."
+                      className="w-full h-24 bg-gray-900 border border-gray-600 rounded-lg p-3 text-sm text-white focus:ring-2 focus:ring-primary outline-none resize-none"
+                    />
+                  </div>
+
+                  {/* Aesthetics for Sequence */}
+                  <div className="bg-gray-900/40 p-3 rounded-lg border border-gray-700/50 space-y-3">
+                    <h3 className="text-xs font-bold text-gray-400 uppercase tracking-wider">Style Settings (Optional)</h3>
+                    <div className="grid grid-cols-2 gap-2">
+                      <ControlSelect label="Visual Style" value={visualStyle} onChange={setVisualStyle} options={styles} />
+                      <ControlSelect label="Lighting" value={lighting} onChange={setLighting} options={lightingOpts} />
+                    </div>
+                  </div>
+
+                  {/* Progress Display */}
+                  {isGeneratingSequence && (
+                    <SequenceProgress
+                      total={sequenceImageCount}
+                      items={sequenceProgress}
+                      currentIndex={sequenceProgress.findIndex(p => p.status === 'generating')}
+                      message={sequenceProgressMessage}
+                    />
+                  )}
+
+                  {/* Generate Button */}
+                  {!isApiKeySelected ? <ApiKeyOverlay /> : (
+                    <button
+                      onClick={handleGenerateSequence}
+                      disabled={isGeneratingSequence || selectedSourcePhotos.length === 0 || !keySubjects.trim() || !sequencePrompt.trim()}
+                      className={`w-full py-3 rounded-lg font-bold text-white shadow-lg transition-all transform hover:scale-[1.02] flex items-center justify-center gap-2 ${
+                        isGeneratingSequence || selectedSourcePhotos.length === 0 || !keySubjects.trim() || !sequencePrompt.trim()
+                          ? 'bg-gray-700 cursor-not-allowed text-gray-400'
+                          : 'bg-gradient-to-r from-purple-600 to-pink-600 hover:from-purple-500 hover:to-pink-500'
+                      }`}
+                    >
+                      {isGeneratingSequence ? (
+                        <>
+                          <Spinner />
+                          Generating Sequence...
+                        </>
+                      ) : (
+                        <>
+                          <Icon name="sparkles" className="w-5 h-5" />
+                          Generate {sequenceImageCount} Image Sequence
+                        </>
+                      )}
+                    </button>
+                  )}
+                </>
               )}
 
+              {/* Standard Generate/Edit UI */}
+              {imageMode !== 'sequence' && (
               <div>
                 <div className="flex justify-between items-center mb-2">
                    <label className="text-xs font-semibold text-gray-400 uppercase tracking-wider">
-                     {imageMode === 'generate' && !isManualMode ? 'Content Description' : 'Full Manual Prompt'}
+                     {!isManualMode ? 'Content Description' : 'Full Manual Prompt'}
                    </label>
                    {isManualMode && <button onClick={() => setIsManualMode(false)} className="text-[10px] text-primary hover:text-white underline">Reset to Auto</button>}
                 </div>
                 <textarea
                   value={userInput}
                   onChange={(e) => setUserInput(e.target.value)}
-                  placeholder={imageMode === 'generate' && !isManualMode ? "e.g. Sales growth of 20% in Q3..." : "Describe exactly what you want..."}
+                  placeholder={!isManualMode ? "e.g. Sales growth of 20% in Q3..." : "Describe exactly what you want..."}
                   className="w-full h-24 bg-gray-900 border border-gray-600 rounded-lg p-3 text-sm text-white focus:ring-2 focus:ring-primary outline-none resize-none"
                 />
               </div>
-
-              {imageMode === 'generate' && !isManualMode && (
-                <CreativeDirectionManager config={airtableConfig} selectedThemePrompt={creativeDirectionPrompt} onSelect={setCreativeDirectionPrompt} />
               )}
-              
+
               {imageMode === 'generate' && !isManualMode && (
                   <div className="bg-black/40 rounded-lg p-3 border border-gray-700/50">
                       <div className="flex justify-between items-center mb-1">
@@ -746,22 +1103,24 @@ const App: React.FC = () => {
                       <p className="text-xs text-gray-300 italic leading-relaxed opacity-90 border-l-2 border-primary pl-2">"{finalPrompt}"</p>
                   </div>
               )}
-              
+
+              {imageMode !== 'sequence' && (
               <div className="flex gap-2 flex-wrap bg-gray-900/50 p-3 rounded-lg border border-gray-700/50 justify-between">
                    <ControlSelect label="Aspect Ratio" value={imageAspectRatio} onChange={(v) => setImageAspectRatio(v as any)} options={[{value:'1:1',label:'1:1'},{value:'16:9',label:'16:9'},{value:'9:16',label:'9:16'},{value:'4:3',label:'4:3'}]} />
                    <ControlSelect label="Resolution" value={imageResolution} onChange={(v) => setImageResolution(v as any)} options={[{value:'1K',label:'1K'},{value:'2K',label:'2K'},{value:'4K',label:'4K'}]} />
               </div>
+              )}
 
-              {!isApiKeySelected ? <ApiKeyOverlay /> : (
+              {imageMode !== 'sequence' && (!isApiKeySelected ? <ApiKeyOverlay /> : (
                 <button
                   onClick={handleGenerateImage}
                   disabled={isImageButtonDisabled}
                   className={`w-full py-3 rounded-lg font-bold text-white shadow-lg transition-all transform hover:scale-[1.02] flex items-center justify-center gap-2 ${isImageButtonDisabled ? 'bg-gray-700 cursor-not-allowed text-gray-400' : 'bg-gradient-to-r from-primary to-purple-600 hover:from-primary-hover hover:to-purple-500'}`}
                 >
                   {isLoading ? <Spinner /> : <Icon name="sparkles" className="w-5 h-5" />}
-                  {isLoading ? 'Processing...' : imageMode === 'generate' ? 'Generate Asset' : 'Edit Image'}
+                  {isLoading ? 'Processing...' : 'Generate Asset'}
                 </button>
-              )}
+              ))}
             </div>
           )}
 
@@ -869,12 +1228,12 @@ const App: React.FC = () => {
                </div>
 
                {filteredHistory.length > 0 ? (
-                   <HistoryFeed 
-                        history={filteredHistory} 
-                        onSelect={(item) => { 
-                            const index = currentHistory.findIndex(i => i.id === item.id); 
-                            if(index !== -1) setCarouselIndex(index); 
-                        }} 
+                   <HistoryFeed
+                        history={filteredHistory}
+                        onSelect={(item) => {
+                            const index = currentHistory.findIndex(i => i.id === item.id);
+                            if(index !== -1) setCarouselIndex(index);
+                        }}
                     />
                ) : (
                    <div className="p-8 border border-dashed border-gray-700 rounded-2xl text-center text-gray-500">
@@ -884,6 +1243,7 @@ const App: React.FC = () => {
            </div>
         </div>
       </div>
+      )}
     </div>
   );
 };
