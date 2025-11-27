@@ -196,10 +196,10 @@ const App: React.FC = () => {
   const loadDynamicControls = async (config: AirtableConfig) => {
       try {
           const controls = await fetchControls(config);
-          
+
           if (controls.length > 0) {
               const mapOptions = (cat: string, def: any[]) => {
-                  const items = controls.filter(c => c.category === cat).map(c => ({ value: c.value, label: c.label }));
+                  const items = controls.filter(c => c.category === cat).map(c => ({ value: c.value, label: c.label, description: c.description }));
                   return items.length > 0 ? [{value:'', label:'Default'}, ...items] : def;
               };
 

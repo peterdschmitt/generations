@@ -16,6 +16,7 @@ export interface ControlRecord {
     id: string;
     label: string;
     value: string;
+    description?: string;
     category: 'Layout' | 'Style' | 'Lighting' | 'Camera';
 }
 
@@ -230,6 +231,8 @@ export const deleteTheme = async (config: AirtableConfig, recordId: string): Pro
 };
 
 // --- CONTROLS CRUD (Layout, Style, Lighting, Camera) ---
+// Airtable columns: Label, Description, Category
+// Label is used for both display and value selection
 export const fetchControls = async (config: AirtableConfig): Promise<ControlRecord[]> => {
     const url = `https://api.airtable.com/v0/${config.baseId}/Controls?maxRecords=100`;
     const response = await fetch(url, { headers: { 'Authorization': `Bearer ${config.apiKey}` } });
@@ -238,18 +241,21 @@ export const fetchControls = async (config: AirtableConfig): Promise<ControlReco
     return data.records.map((r: any) => ({
         id: r.id,
         label: r.fields.Label,
-        value: r.fields.Value,
+        value: r.fields.Label,  // Use Label as the value
+        description: r.fields.Description,
         category: r.fields.Category
     }));
 };
 
-export const createControl = async (config: AirtableConfig, label: string, value: string, category: string): Promise<ControlRecord> => {
+export const createControl = async (config: AirtableConfig, label: string, category: string, description?: string): Promise<ControlRecord> => {
     const url = `https://api.airtable.com/v0/${config.baseId}/Controls`;
-    const payload = { fields: { "Label": label, "Value": value, "Category": category }, typecast: true };
+    const fields: any = { "Label": label, "Category": category };
+    if (description) fields["Description"] = description;
+    const payload = { fields, typecast: true };
     const response = await fetch(url, { method: 'POST', headers: { 'Authorization': `Bearer ${config.apiKey}`, 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
     if (!response.ok) throw new Error("Failed");
     const r = await response.json();
-    return { id: r.id, label: r.fields.Label, value: r.fields.Value, category: r.fields.Category };
+    return { id: r.id, label: r.fields.Label, value: r.fields.Label, description: r.fields.Description, category: r.fields.Category };
 };
 
 export const deleteControl = async (config: AirtableConfig, id: string): Promise<void> => {
