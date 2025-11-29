@@ -1,6 +1,6 @@
 
 import React, { useState, ChangeEvent, useEffect, useCallback, useRef } from 'react';
-import { editImageWithPrompt, generateImageFromPrompt, getSuggestionsForImage, generateVideoFromPrompt, generateWithMultipleImages, fetchImageAsBase64 } from './services/geminiService';
+import { editImageWithPrompt, generateImageFromPrompt, getSuggestionsForImage, generateVideoFromPrompt, generateWithMultipleImages } from './services/geminiService';
 import { saveRecordToAirtable, fetchGenerationHistory, AirtableConfig, fetchControls, ControlRecord } from './services/airtableService';
 import { saveLocalImage, getLocalImage } from './services/dbService';
 import { fetchSourcePhotos, uploadSourcePhoto, deleteSourcePhoto, SourcePhoto } from './services/sourcePhotoService';
@@ -15,12 +15,7 @@ import ControlManagerModal from './components/ControlManagerModal';
 import Suggestions from './components/Suggestions';
 import HistoryFeed from './components/HistoryFeed';
 import SourceLibraryTab from './components/SourceLibraryTab';
-import SourcePhotoPicker from './components/SourcePhotoPicker';
-import SequenceAngleInputs from './components/SequenceAngleInputs';
-import SequenceProgress, { SequenceProgressItem } from './components/SequenceProgress';
-import ShotListPresetPicker from './components/ShotListPresetPicker';
 import { PromptTemplate, TEMPLATE_CATEGORIES } from './data/templates';
-import { ShotListPreset } from './data/shotListPresets';
 
 interface ImageState {
   file: File | null;
@@ -56,8 +51,86 @@ export type HistoryItem = {
   }
 }
 
+// Shot configuration for batch/carousel mode
+interface ShotConfig {
+  id: number;
+  cameraAngle: string;
+  lens: string;
+  background: string;
+  status: 'pending' | 'generating' | 'completed' | 'error';
+  resultUrl?: string;
+}
+
+// Camera angle presets
+const CAMERA_ANGLES = [
+  { value: '', label: 'Default' },
+  { value: 'eye level', label: 'Eye Level' },
+  { value: 'low angle', label: 'Low Angle' },
+  { value: 'high angle', label: 'High Angle' },
+  { value: 'birds eye view', label: 'Birds Eye View' },
+  { value: 'worms eye view', label: 'Worms Eye View' },
+  { value: 'dutch angle', label: 'Dutch Angle' },
+  { value: 'over the shoulder', label: 'Over the Shoulder' },
+  { value: 'close up', label: 'Close Up' },
+  { value: 'extreme close up', label: 'Extreme Close Up' },
+  { value: 'wide shot', label: 'Wide Shot' },
+  { value: 'medium shot', label: 'Medium Shot' },
+];
+
+// Lens presets
+const LENS_PRESETS = [
+  { value: '', label: 'Default' },
+  { value: '24mm wide angle', label: '24mm Wide Angle' },
+  { value: '35mm standard', label: '35mm Standard' },
+  { value: '50mm portrait', label: '50mm Portrait' },
+  { value: '85mm portrait', label: '85mm Portrait' },
+  { value: '100mm macro', label: '100mm Macro' },
+  { value: '200mm telephoto', label: '200mm Telephoto' },
+  { value: 'fisheye', label: 'Fisheye' },
+  { value: 'tilt shift', label: 'Tilt Shift' },
+  { value: 'anamorphic', label: 'Anamorphic' },
+];
+
+// Video camera movement presets
+const VIDEO_CAMERA_MOVEMENTS = [
+  { value: '', label: 'Default (Auto)' },
+  { value: 'static shot', label: 'Static Shot' },
+  { value: 'slow pan left', label: 'Slow Pan Left' },
+  { value: 'slow pan right', label: 'Slow Pan Right' },
+  { value: 'slow zoom in', label: 'Slow Zoom In' },
+  { value: 'slow zoom out', label: 'Slow Zoom Out' },
+  { value: 'dolly forward', label: 'Dolly Forward' },
+  { value: 'dolly backward', label: 'Dolly Backward' },
+  { value: 'crane up', label: 'Crane Up' },
+  { value: 'crane down', label: 'Crane Down' },
+  { value: 'tracking shot', label: 'Tracking Shot' },
+  { value: 'orbit around subject', label: 'Orbit Around' },
+  { value: 'handheld movement', label: 'Handheld' },
+];
+
+// Video pacing presets
+const VIDEO_PACING = [
+  { value: '', label: 'Default' },
+  { value: 'slow and dramatic', label: 'Slow & Dramatic' },
+  { value: 'gentle and smooth', label: 'Gentle & Smooth' },
+  { value: 'moderate pace', label: 'Moderate' },
+  { value: 'energetic and dynamic', label: 'Energetic' },
+  { value: 'fast paced action', label: 'Fast Action' },
+];
+
+// Video style presets
+const VIDEO_STYLES = [
+  { value: '', label: 'Default' },
+  { value: 'cinematic film look', label: 'Cinematic' },
+  { value: 'documentary style', label: 'Documentary' },
+  { value: 'commercial advertisement', label: 'Commercial' },
+  { value: 'music video aesthetic', label: 'Music Video' },
+  { value: 'corporate presentation', label: 'Corporate' },
+  { value: 'social media content', label: 'Social Media' },
+  { value: 'artistic experimental', label: 'Experimental' },
+];
+
 type View = 'source' | 'image' | 'video';
-type ImageMode = 'generate' | 'sequence';
 
 // Default Fallbacks
 const DEFAULT_LAYOUTS = [
@@ -70,7 +143,9 @@ const DEFAULT_LAYOUTS = [
 const App: React.FC = () => {
   // Mode State
   const [view, setView] = useState<View>('image');
-  const [imageMode, setImageMode] = useState<ImageMode>('generate');
+
+  // Collapsible Controls State
+  const [showStyleControls, setShowStyleControls] = useState(true);
 
   // Common state
   const [isLoading, setIsLoading] = useState<boolean>(false);
@@ -106,6 +181,7 @@ const App: React.FC = () => {
 
   // Image Input State
   const [originalImage, setOriginalImage] = useState<ImageState>({ file: null, dataUrl: null });
+  const [editImages, setEditImages] = useState<ImageState[]>([]);
   const [userInput, setUserInput] = useState<string>(''); 
   const [suggestions, setSuggestions] = useState<string[]>([]);
   const [isSuggesting, setIsSuggesting] = useState<boolean>(false);
@@ -120,6 +196,15 @@ const App: React.FC = () => {
   const [startImage, setStartImage] = useState<ImageState>({ file: null, dataUrl: null });
   const [videoAspectRatio, setVideoAspectRatio] = useState<'16:9' | '9:16'>('16:9');
   const [videoResolution, setVideoResolution] = useState<'720p' | '1080p'>('720p');
+
+  // Video Production Direction State
+  const [videoCameraMovement, setVideoCameraMovement] = useState('');
+  const [videoPacing, setVideoPacing] = useState('');
+  const [videoStyle, setVideoStyle] = useState('');
+
+  // Video Title/Text Overlay State
+  const [videoTitle, setVideoTitle] = useState('');
+  const [videoSubtitle, setVideoSubtitle] = useState('');
 
   // Manual Override Mode
   const [isManualMode, setIsManualMode] = useState(false);
@@ -141,26 +226,37 @@ const App: React.FC = () => {
   const [showTemplateLibrary, setShowTemplateLibrary] = useState(false);
   const [showControlManager, setShowControlManager] = useState(false);
 
+  // Batch/Carousel Mode State
+  const [shotCount, setShotCount] = useState<number>(1);
+  const [shotConfigs, setShotConfigs] = useState<ShotConfig[]>([]);
+  const [isBatchGenerating, setIsBatchGenerating] = useState(false);
+
+  // Initialize shot configs when shot count changes
+  useEffect(() => {
+    const newConfigs: ShotConfig[] = [];
+    for (let i = 0; i < shotCount; i++) {
+      newConfigs.push({
+        id: i,
+        cameraAngle: '',
+        lens: '',
+        background: '',
+        status: 'pending'
+      });
+    }
+    setShotConfigs(newConfigs);
+  }, [shotCount]);
+
+  const updateShotConfig = (shotId: number, field: keyof ShotConfig, value: string) => {
+    setShotConfigs(prev => prev.map(shot =>
+      shot.id === shotId ? { ...shot, [field]: value } : shot
+    ));
+  };
+
   // Source Photo Library State
   const [sourcePhotos, setSourcePhotos] = useState<SourcePhoto[]>([]);
   const [isSourcePhotosLoading, setIsSourcePhotosLoading] = useState(false);
   const [sourcePhotoError, setSourcePhotoError] = useState<string | null>(null);
 
-  // Sequence Mode State
-  const [selectedSourcePhotos, setSelectedSourcePhotos] = useState<SourcePhoto[]>([]);
-  const [keySubjects, setKeySubjects] = useState('');
-  const [sequenceImageCount, setSequenceImageCount] = useState(3);
-  const [sequenceAngles, setSequenceAngles] = useState<string[]>(['', '', '']);
-  const [sequencePrompt, setSequencePrompt] = useState('');
-  const [isGeneratingSequence, setIsGeneratingSequence] = useState(false);
-  const [sequenceProgress, setSequenceProgress] = useState<SequenceProgressItem[]>([]);
-  const [sequenceProgressMessage, setSequenceProgressMessage] = useState('');
-
-  // Apply shot list preset to sequence settings
-  const handleApplyShotListPreset = (preset: ShotListPreset) => {
-    setSequenceImageCount(preset.shots.length);
-    setSequenceAngles(preset.shots.map(shot => shot.angle));
-  };
 
   // --- Synthesizer Logic ---
   const getConstructedPrompt = useCallback(() => {
@@ -196,7 +292,7 @@ const App: React.FC = () => {
     }
 
     return basePrompt;
-  }, [view, isManualMode, imageMode, userInput, layoutStyle, topic, visualStyle, lighting, camera, videoPrompt, selectedTemplate]);
+  }, [view, isManualMode, userInput, layoutStyle, topic, visualStyle, lighting, camera, videoPrompt, selectedTemplate]);
 
   const finalPrompt = getConstructedPrompt();
 
@@ -244,8 +340,6 @@ const App: React.FC = () => {
     try {
       await deleteSourcePhoto(airtableConfig, id);
       setSourcePhotos(prev => prev.filter(p => p.id !== id));
-      // Also remove from selected if it was selected
-      setSelectedSourcePhotos(prev => prev.filter(p => p.id !== id));
     } catch (e: any) {
       setSourcePhotoError(e.message || "Failed to delete photo");
     }
@@ -352,7 +446,7 @@ const App: React.FC = () => {
       setError('Failed to read the pasted image.');
     }
     reader.readAsDataURL(file);
-  }, [setError, setSuggestions, setImageMode]);
+  }, [setError, setSuggestions]);
 
   const pasteHandlerRef = useRef<(event: ClipboardEvent) => void>();
 
@@ -425,12 +519,6 @@ const App: React.FC = () => {
     setSelectedTemplate(null);
   };
 
-  const handleImageModeChange = (newMode: ImageMode) => {
-    setImageMode(newMode);
-    resetImageState();
-    setError(null);
-    setSuccessMsg(null);
-  };
 
   const fileToBase64 = (file: File): Promise<string> => {
     return new Promise((resolve, reject) => {
@@ -455,7 +543,9 @@ const App: React.FC = () => {
   const autoSaveToAirtable = async (item: HistoryItem): Promise<string | null> => {
     if (airtableConfig.apiKey && airtableConfig.baseId) {
         setIsSavingToAirtable(true);
-        if (airtableConfig.imgbbApiKey) {
+        if (item.type === 'video') {
+            setSuccessMsg("Uploading video to cloud storage...");
+        } else if (airtableConfig.imgbbApiKey) {
             setSuccessMsg("Bridging image to cloud... (Check ad-blockers if this fails)");
         } else {
             setSuccessMsg("Saving metadata...");
@@ -472,14 +562,18 @@ const App: React.FC = () => {
                 aspectRatio: item.aspectRatio,
                 resolution: item.resolution,
                 isFavorite: item.isFavorite,
-                imageData: item.imageUrl, 
+                imageData: item.type === 'image' ? item.imageUrl : null,
+                videoData: item.type === 'video' ? item.videoUrl : null,
                 lighting: item.metadata?.lighting,
                 camera: item.metadata?.camera,
                 rawInput: item.metadata?.rawInput,
-                creativeDirection: item.metadata?.creativeDirection,
                 templateId: item.metadata?.templateId
             });
-            setSuccessMsg(airtableConfig.imgbbApiKey ? "Success! Image bridged to Airtable." : "Metadata saved. Image stored locally.");
+            if (item.type === 'video') {
+                setSuccessMsg("Success! Video uploaded to Airtable.");
+            } else {
+                setSuccessMsg(airtableConfig.imgbbApiKey ? "Success! Image bridged to Airtable." : "Metadata saved. Image stored locally.");
+            }
             return newRecordId;
         } catch (e: any) {
             console.error("Auto-save failed", e);
@@ -492,11 +586,12 @@ const App: React.FC = () => {
     return null;
   };
 
-  const handleGenerateImage = async () => {
-    const promptToUse = finalPrompt;
+  // Unified smart handler that adapts based on images present
+  const handleCreateImage = async () => {
+    const promptToUse = editImages.length > 0 ? userInput.trim() : finalPrompt;
 
     if (!promptToUse.trim()) {
-      setError("Please provide a prompt to generate an image.");
+      setError("Please provide a prompt to create an image.");
       return;
     }
 
@@ -506,12 +601,44 @@ const App: React.FC = () => {
     setSuggestions([]);
 
     try {
-      const resultImageUrl = await generateImageFromPrompt(
-        promptToUse,
-        imageAspectRatio,
-        imageResolution
-      );
-      
+      let resultImageUrl: string;
+      let actionType: string;
+
+      if (editImages.length === 0) {
+        // No images = Generate from scratch
+        resultImageUrl = await generateImageFromPrompt(
+          promptToUse,
+          imageAspectRatio,
+          imageResolution
+        );
+        actionType = 'Generate';
+      } else if (editImages.length === 1) {
+        // Single image = Transform/Edit
+        const base64Data = editImages[0].dataUrl!.split(',')[1];
+        const mimeType = editImages[0].file?.type || 'image/png';
+        resultImageUrl = await editImageWithPrompt(
+          base64Data,
+          mimeType,
+          promptToUse,
+          imageAspectRatio,
+          imageResolution
+        );
+        actionType = 'Transform';
+      } else {
+        // Multiple images = Combine/Transform
+        const sourceImagesBase64 = editImages.map(img => ({
+          base64Data: img.dataUrl!.split(',')[1],
+          mimeType: img.file?.type || 'image/png'
+        }));
+        resultImageUrl = await generateWithMultipleImages(
+          sourceImagesBase64,
+          promptToUse,
+          imageAspectRatio,
+          imageResolution
+        );
+        actionType = 'Combine';
+      }
+
       const tempId = `temp-${Date.now()}`;
       const newHistoryItem: HistoryItem = {
         id: tempId,
@@ -520,12 +647,12 @@ const App: React.FC = () => {
         campaign: campaign.trim() || 'Uncategorized',
         isFavorite: false,
         imageUrl: resultImageUrl,
-        prompt: promptToUse, 
+        prompt: promptToUse,
         aspectRatio: imageAspectRatio,
         resolution: imageResolution,
         isLocalOnly: true,
         metadata: {
-            style: isManualMode ? 'Manual' : visualStyle,
+            style: editImages.length > 0 ? actionType : (isManualMode ? 'Manual' : visualStyle),
             layout: layoutStyle,
             lighting: lighting,
             camera: camera,
@@ -533,19 +660,23 @@ const App: React.FC = () => {
             templateId: selectedTemplate?.id
         }
       };
-      
+
       setHistory(prev => [newHistoryItem, ...prev]);
-      setCarouselIndex(0); 
-      
+      setCarouselIndex(0);
+
       const realRecordId = await autoSaveToAirtable(newHistoryItem);
       const finalId = realRecordId || tempId;
       await saveLocalImage(finalId, resultImageUrl);
 
       if (realRecordId) {
-          setHistory(prev => prev.map(item => 
+          setHistory(prev => prev.map(item =>
               item.id === tempId ? { ...item, id: realRecordId } : item
           ));
       }
+
+      setSuccessMsg(editImages.length > 0
+        ? `Image ${actionType.toLowerCase()}ed successfully!`
+        : "Image generated successfully!");
 
     } catch (e) {
       handleApiError(e);
@@ -554,20 +685,280 @@ const App: React.FC = () => {
     }
   };
 
+  // Batch generation handler - generates multiple shots progressively
+  const handleBatchGenerate = async () => {
+    const basePrompt = editImages.length > 0 ? userInput.trim() : finalPrompt;
+
+    if (!basePrompt.trim()) {
+      setError("Please provide a base prompt for the batch.");
+      return;
+    }
+
+    setIsBatchGenerating(true);
+    setError(null);
+    setSuccessMsg(null);
+
+    const sequenceId = `batch-${Date.now()}`;
+
+    // Process each shot sequentially to show progress
+    for (let i = 0; i < shotConfigs.length; i++) {
+      const shot = shotConfigs[i];
+
+      // Update status to generating
+      setShotConfigs(prev => prev.map(s =>
+        s.id === shot.id ? { ...s, status: 'generating' } : s
+      ));
+
+      // Build shot-specific prompt
+      let shotPrompt = basePrompt;
+      const shotModifiers: string[] = [];
+      if (shot.cameraAngle) shotModifiers.push(`Camera angle: ${shot.cameraAngle}`);
+      if (shot.lens) shotModifiers.push(`Lens: ${shot.lens}`);
+      if (shot.background) shotModifiers.push(`Background: ${shot.background}`);
+
+      if (shotModifiers.length > 0) {
+        shotPrompt += `. ${shotModifiers.join('. ')}.`;
+      }
+
+      try {
+        let resultImageUrl: string;
+
+        if (editImages.length === 0) {
+          // Generate from scratch
+          resultImageUrl = await generateImageFromPrompt(
+            shotPrompt,
+            imageAspectRatio,
+            imageResolution
+          );
+        } else if (editImages.length === 1) {
+          // Transform single image
+          const base64Data = editImages[0].dataUrl!.split(',')[1];
+          const mimeType = editImages[0].file?.type || 'image/png';
+          resultImageUrl = await editImageWithPrompt(
+            base64Data,
+            mimeType,
+            shotPrompt,
+            imageAspectRatio,
+            imageResolution
+          );
+        } else {
+          // Multiple images
+          const sourceImagesBase64 = editImages.map(img => ({
+            base64Data: img.dataUrl!.split(',')[1],
+            mimeType: img.file?.type || 'image/png'
+          }));
+          resultImageUrl = await generateWithMultipleImages(
+            sourceImagesBase64,
+            shotPrompt,
+            imageAspectRatio,
+            imageResolution
+          );
+        }
+
+        // Update shot config with result
+        setShotConfigs(prev => prev.map(s =>
+          s.id === shot.id ? { ...s, status: 'completed', resultUrl: resultImageUrl } : s
+        ));
+
+        // Add to history
+        const tempId = `temp-${Date.now()}-${i}`;
+        const newHistoryItem: HistoryItem = {
+          id: tempId,
+          type: 'image',
+          topic: topic.trim() || 'General',
+          campaign: campaign.trim() || 'Uncategorized',
+          isFavorite: false,
+          imageUrl: resultImageUrl,
+          prompt: shotPrompt,
+          aspectRatio: imageAspectRatio,
+          resolution: imageResolution,
+          isLocalOnly: true,
+          sequenceId: sequenceId,
+          sequenceIndex: i + 1,
+          sequenceTotal: shotConfigs.length,
+          metadata: {
+            style: editImages.length > 0 ? 'Batch Transform' : visualStyle,
+            layout: layoutStyle,
+            lighting: lighting,
+            camera: shot.cameraAngle || camera,
+            rawInput: userInput,
+          }
+        };
+
+        setHistory(prev => [newHistoryItem, ...prev]);
+        if (i === 0) setCarouselIndex(0);
+
+        // Save to Airtable
+        const realRecordId = await autoSaveToAirtable(newHistoryItem);
+        const finalId = realRecordId || tempId;
+        await saveLocalImage(finalId, resultImageUrl);
+
+        if (realRecordId) {
+          setHistory(prev => prev.map(item =>
+            item.id === tempId ? { ...item, id: realRecordId } : item
+          ));
+        }
+
+      } catch (e) {
+        console.error(`Failed to generate shot ${i + 1}:`, e);
+        setShotConfigs(prev => prev.map(s =>
+          s.id === shot.id ? { ...s, status: 'error' } : s
+        ));
+      }
+    }
+
+    setIsBatchGenerating(false);
+    const completedCount = shotConfigs.filter(s => s.status === 'completed').length;
+    setSuccessMsg(`Batch complete! ${completedCount}/${shotConfigs.length} shots generated.`);
+  };
+
+  // Create video from first completed batch shot
+  const handleCreateVideoFromBatch = async () => {
+    const firstCompletedShot = shotConfigs.find(s => s.status === 'completed' && s.resultUrl);
+    if (!firstCompletedShot?.resultUrl) {
+      setError("No completed shots available to create video from.");
+      return;
+    }
+
+    // Extract base64 from data URL
+    const imageDataUrl = firstCompletedShot.resultUrl;
+    if (!imageDataUrl.startsWith('data:')) {
+      setError("Shot image format not supported for video creation.");
+      return;
+    }
+
+    const base64Data = imageDataUrl.split(',')[1];
+    const mimeMatch = imageDataUrl.match(/data:([^;]+);/);
+    const mimeType = mimeMatch ? mimeMatch[1] : 'image/png';
+
+    // Use the original prompt as video description
+    const videoDescription = finalPrompt || userInput || "Animate this image with subtle motion";
+
+    setIsLoading(true);
+    setError(null);
+    setLoadingMessage("Creating video from batch shot...");
+
+    try {
+      const startImagePayload = {
+        mimeType: mimeType,
+        data: base64Data
+      };
+
+      const videoUrl = await generateVideoFromPrompt(
+        videoDescription,
+        setLoadingMessage,
+        startImagePayload,
+        videoAspectRatio,
+        videoResolution
+      );
+
+      const tempId = `temp-${Date.now()}`;
+      const newHistoryItem: HistoryItem = {
+        id: tempId,
+        type: 'video',
+        topic: topic.trim() || 'General',
+        campaign: campaign.trim() || 'Uncategorized',
+        isFavorite: false,
+        imageUrl: firstCompletedShot.resultUrl,
+        videoUrl: videoUrl,
+        prompt: videoDescription,
+        aspectRatio: videoAspectRatio,
+        resolution: videoResolution,
+        isLocalOnly: true,
+        metadata: { style: 'Batch to Video' }
+      };
+
+      setHistory(prev => [newHistoryItem, ...prev]);
+      setCarouselIndex(0);
+      setView('video'); // Switch to video view to see result
+
+      const realRecordId = await autoSaveToAirtable(newHistoryItem);
+      if (realRecordId) {
+        setHistory(prev => prev.map(item =>
+          item.id === tempId ? { ...item, id: realRecordId } : item
+        ));
+      }
+
+      setSuccessMsg("Video created from batch shot!");
+    } catch (e) {
+      handleApiError(e);
+    } finally {
+      setIsLoading(false);
+      setLoadingMessage('');
+    }
+  };
+
+  // Build enhanced video prompt with production direction
+  const buildVideoPrompt = () => {
+    let prompt = videoPrompt.trim();
+    const directives: string[] = [];
+
+    // Add title/subtitle directives
+    if (videoTitle.trim()) {
+      directives.push(`Display title text: "${videoTitle.trim()}"`);
+    }
+    if (videoSubtitle.trim()) {
+      directives.push(`Display subtitle text: "${videoSubtitle.trim()}"`);
+    }
+
+    // Add production direction
+    if (videoCameraMovement) {
+      directives.push(`Camera movement: ${videoCameraMovement}`);
+    }
+    if (videoPacing) {
+      directives.push(`Pacing: ${videoPacing}`);
+    }
+    if (videoStyle) {
+      directives.push(`Visual style: ${videoStyle}`);
+    }
+
+    // Append directives to base prompt
+    if (directives.length > 0) {
+      prompt += `. ${directives.join('. ')}.`;
+    }
+
+    return prompt;
+  };
+
   const handleGenerateVideo = async () => {
-      let promptToUse = videoPrompt;
-      if (!promptToUse.trim()) { setError("Video prompt required."); return; }
+      const basePrompt = videoPrompt.trim();
+      if (!basePrompt) { setError("Video prompt required."); return; }
+
+      const enhancedPrompt = buildVideoPrompt();
       setIsLoading(true); setError(null); setLoadingMessage("Initializing...");
+
       try {
         let startImagePayload = null;
-        if (startImage.file) {
+
+        // If we have title/subtitle but no start image, generate a title card first
+        if ((videoTitle.trim() || videoSubtitle.trim()) && !startImage.file) {
+          setLoadingMessage("Generating title card...");
+          const titlePrompt = `Create a professional title card with${videoTitle.trim() ? ` the main title "${videoTitle.trim()}"` : ''}${videoSubtitle.trim() ? ` and subtitle "${videoSubtitle.trim()}"` : ''}. Clean, modern design with elegant typography on a subtle gradient background. ${videoStyle ? `Style: ${videoStyle}.` : ''}`;
+
+          try {
+            const titleCardUrl = await generateImageFromPrompt(titlePrompt, videoAspectRatio, '2K');
+            // Extract base64 from data URL
+            if (titleCardUrl.startsWith('data:')) {
+              const base64Data = titleCardUrl.split(',')[1];
+              const mimeMatch = titleCardUrl.match(/data:([^;]+);/);
+              startImagePayload = {
+                mimeType: mimeMatch ? mimeMatch[1] : 'image/png',
+                data: base64Data
+              };
+            }
+          } catch (titleErr) {
+            console.warn("Could not generate title card, proceeding without:", titleErr);
+          }
+        } else if (startImage.file) {
           startImagePayload = {
             mimeType: startImage.file.type,
             data: await fileToBase64(startImage.file)
-          }
+          };
         }
-        const videoUrl = await generateVideoFromPrompt(promptToUse, setLoadingMessage, startImagePayload, videoAspectRatio, videoResolution);
-        
+
+        setLoadingMessage("Generating video...");
+        const videoUrl = await generateVideoFromPrompt(enhancedPrompt, setLoadingMessage, startImagePayload, videoAspectRatio, videoResolution);
+
         const tempId = `temp-${Date.now()}`;
         const newHistoryItem: HistoryItem = {
           id: tempId,
@@ -577,194 +968,25 @@ const App: React.FC = () => {
           isFavorite: false,
           imageUrl: startImage.dataUrl || null,
           videoUrl: videoUrl,
-          prompt: promptToUse,
+          prompt: enhancedPrompt,
           aspectRatio: videoAspectRatio,
           resolution: videoResolution,
           isLocalOnly: true,
-          metadata: { style: isManualMode ? 'Manual' : 'Video' }
+          metadata: {
+            style: videoStyle || 'Video',
+            rawInput: basePrompt
+          }
         };
-        
+
         setHistory(prev => [newHistoryItem, ...prev]);
         setCarouselIndex(0);
         const realRecordId = await autoSaveToAirtable(newHistoryItem);
-        const finalId = realRecordId || tempId;
-        
+
         if (realRecordId) {
              setHistory(prev => prev.map(item => item.id === tempId ? { ...item, id: realRecordId } : item));
         }
 
       } catch(e) { handleApiError(e); } finally { setIsLoading(false); setLoadingMessage(''); }
-  };
-
-  const handleGenerateSequence = async () => {
-    // Validation
-    if (selectedSourcePhotos.length === 0) {
-      setError("Please select at least one source photo from the library.");
-      return;
-    }
-    if (!keySubjects.trim()) {
-      setError("Please describe the key subjects to maintain consistency across images.");
-      return;
-    }
-    if (!sequencePrompt.trim()) {
-      setError("Please provide a scene description for the sequence.");
-      return;
-    }
-    const filledAngles = sequenceAngles.slice(0, sequenceImageCount).filter(a => a.trim());
-    if (filledAngles.length < sequenceImageCount) {
-      setError("Please provide an angle/perspective description for each image in the sequence.");
-      return;
-    }
-
-    setIsGeneratingSequence(true);
-    setError(null);
-    setSuccessMsg(null);
-    setSequenceProgress([]);
-    setSequenceProgressMessage('Preparing source images...');
-
-    const sequenceId = `seq-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
-    const sourceUrls = selectedSourcePhotos.map(p => p.imageUrl);
-
-    try {
-      // Fetch all source images as base64
-      const sourceImagesBase64 = await Promise.all(
-        selectedSourcePhotos.map(photo => fetchImageAsBase64(photo.imageUrl))
-      );
-
-      // Generate each image in sequence
-      for (let i = 0; i < sequenceImageCount; i++) {
-        const angleDesc = sequenceAngles[i];
-
-        // Update progress
-        setSequenceProgress(prev => [
-          ...prev.filter(p => p.index !== i),
-          { index: i, status: 'generating' }
-        ]);
-        setSequenceProgressMessage(`Generating image ${i + 1} of ${sequenceImageCount}...`);
-
-        // Build the sequence-aware prompt
-        const fullPrompt = buildSequencePrompt(
-          keySubjects,
-          angleDesc,
-          i + 1,
-          sequenceImageCount,
-          sequencePrompt
-        );
-
-        try {
-          // Generate the image with multiple source photos
-          const resultImageUrl = await generateWithMultipleImages(
-            sourceImagesBase64,
-            fullPrompt,
-            imageAspectRatio,
-            imageResolution
-          );
-
-          // Create history item for this sequence image
-          const tempId = `temp-${Date.now()}-${i}`;
-          const newHistoryItem: HistoryItem = {
-            id: tempId,
-            type: 'image',
-            topic: topic.trim() || 'Sequence',
-            campaign: campaign.trim() || 'Uncategorized',
-            isFavorite: false,
-            imageUrl: resultImageUrl,
-            prompt: sequencePrompt,
-            aspectRatio: imageAspectRatio,
-            resolution: imageResolution,
-            isLocalOnly: true,
-            sequenceId: sequenceId,
-            sequenceIndex: i + 1,
-            sequenceTotal: sequenceImageCount,
-            sourcePhotoUrls: sourceUrls,
-            keySubjects: keySubjects,
-            angleDescription: angleDesc,
-            metadata: {
-              style: visualStyle || 'Sequence',
-              layout: layoutStyle,
-              lighting: lighting,
-              camera: camera,
-              rawInput: sequencePrompt
-            }
-          };
-
-          // Add to history immediately (streaming display)
-          setHistory(prev => [newHistoryItem, ...prev]);
-          if (i === 0) setCarouselIndex(0);
-
-          // Update progress to completed
-          setSequenceProgress(prev => [
-            ...prev.filter(p => p.index !== i),
-            { index: i, status: 'completed', imageUrl: resultImageUrl }
-          ]);
-
-          // Save to Airtable with sequence metadata
-          const realRecordId = await autoSaveToAirtable(newHistoryItem);
-          const finalId = realRecordId || tempId;
-          await saveLocalImage(finalId, resultImageUrl);
-
-          if (realRecordId) {
-            setHistory(prev => prev.map(item =>
-              item.id === tempId ? { ...item, id: realRecordId } : item
-            ));
-          }
-
-        } catch (imgError: any) {
-          console.error(`Failed to generate image ${i + 1}:`, imgError);
-          setSequenceProgress(prev => [
-            ...prev.filter(p => p.index !== i),
-            { index: i, status: 'error', error: imgError.message }
-          ]);
-          // Continue with next image even if one fails
-        }
-      }
-
-      const completedCount = sequenceProgress.filter(p => p.status === 'completed').length + 1;
-      setSuccessMsg(`Sequence complete! Generated ${completedCount} of ${sequenceImageCount} images.`);
-      setSequenceProgressMessage('');
-
-    } catch (e: any) {
-      handleApiError(e);
-    } finally {
-      setIsGeneratingSequence(false);
-    }
-  };
-
-  // Build a prompt for sequence generation
-  const buildSequencePrompt = (
-    subjects: string,
-    angle: string,
-    index: number,
-    total: number,
-    basePrompt: string
-  ): string => {
-    let prompt = `Analyze the provided reference photos carefully. Use them as inspiration for:
-- Visual style and color palette
-- Subject appearance and characteristics
-- Composition and framing references
-
-IMPORTANT - Maintain consistency for these key subjects across all images:
-${subjects}
-
-This is image ${index} of ${total} in a connected sequence.
-
-Camera angle/perspective for THIS specific image:
-${angle}
-
-Scene description:
-${basePrompt}`;
-
-    // Add aesthetics if set
-    const aesthetics: string[] = [];
-    if (visualStyle) aesthetics.push(`Style: ${visualStyle}`);
-    if (lighting) aesthetics.push(`Lighting: ${lighting}`);
-    if (camera) aesthetics.push(`Camera: ${camera}`);
-
-    if (aesthetics.length > 0) {
-      prompt += `\n\n${aesthetics.join('. ')}.`;
-    }
-
-    return prompt;
   };
 
   const toggleFavorite = (itemId: string) => {
@@ -813,13 +1035,71 @@ ${basePrompt}`;
               setLayoutStyle(meta.layout || '');
               setLighting(meta.lighting || '');
               setCamera(meta.camera || '');
-              setCreativeDirectionPrompt(meta.creativeDirection || '');
-              setSelectedTemplate(null); 
+              setSelectedTemplate(null);
           } else {
-              setUserInput(item.prompt); 
+              setUserInput(item.prompt);
               setIsManualMode(true);
           }
-          setSuggestions([]); setImageMode('generate'); setView('image');
+          setSuggestions([]); setEditImages([]); setView('image');
+      }
+      const inputElement = document.getElementById('input-panel');
+      inputElement?.scrollIntoView({ behavior: 'smooth' });
+  };
+
+  // Load image from history into Edit mode
+  const handleEditFromHistory = async (item: HistoryItem) => {
+      setSuccessMsg(null);
+      setError(null);
+      if (item.type === 'image' && item.imageUrl) {
+          // Set context
+          if (item.topic) setTopic(item.topic);
+          if (item.campaign) setCampaign(item.campaign);
+          if (item.aspectRatio) setImageAspectRatio(item.aspectRatio as any);
+          if (item.resolution) setImageResolution(item.resolution as any);
+
+          // Load the image into the Edit mode
+          const imageUrl = item.imageUrl;
+
+          // Check if it's already a data URL (base64)
+          if (imageUrl.startsWith('data:')) {
+              // Extract mime type from data URL
+              const mimeMatch = imageUrl.match(/data:([^;]+);/);
+              const mimeType = mimeMatch ? mimeMatch[1] : 'image/png';
+              // Create a blob from base64
+              const base64Data = imageUrl.split(',')[1];
+              const byteCharacters = atob(base64Data);
+              const byteNumbers = new Array(byteCharacters.length);
+              for (let i = 0; i < byteCharacters.length; i++) {
+                  byteNumbers[i] = byteCharacters.charCodeAt(i);
+              }
+              const byteArray = new Uint8Array(byteNumbers);
+              const blob = new Blob([byteArray], { type: mimeType });
+              const file = new File([blob], 'image.png', { type: mimeType });
+              setEditImages([{ file, dataUrl: imageUrl }]);
+          } else {
+              // It's a URL, fetch and convert
+              try {
+                  const response = await fetch(imageUrl);
+                  const blob = await response.blob();
+                  const file = new File([blob], 'image.png', { type: blob.type || 'image/png' });
+                  // Convert to data URL for display
+                  const reader = new FileReader();
+                  reader.onloadend = () => {
+                      setEditImages([{ file, dataUrl: reader.result as string }]);
+                  };
+                  reader.readAsDataURL(blob);
+              } catch (e) {
+                  console.error('Failed to load image:', e);
+                  setError('Failed to load image for editing');
+                  return;
+              }
+          }
+
+          // Pre-fill with the original prompt as a starting point
+          setUserInput(item.metadata?.rawInput || item.prompt || '');
+
+          // Switch to Image view (unified - images loaded = transform mode)
+          setView('image');
       }
       const inputElement = document.getElementById('input-panel');
       inputElement?.scrollIntoView({ behavior: 'smooth' });
@@ -833,15 +1113,13 @@ ${basePrompt}`;
   const handleCopyToManual = () => {
     setUserInput(finalPrompt);
     setIsManualMode(true);
-    setSelectedTemplate(null); 
-    setCreativeDirectionPrompt(''); 
+    setSelectedTemplate(null);
   };
 
   const nextItem = () => { if (carouselIndex < currentHistory.length - 1) setCarouselIndex(prev => prev + 1); };
   const prevItem = () => { if (carouselIndex > 0) setCarouselIndex(prev => prev - 1); };
 
-  const isImageButtonDisabled = isLoading || !finalPrompt.trim() || !isApiKeySelected;
-  const isVideoButtonDisabled = isLoading || !finalPrompt.trim() || !isApiKeySelected;
+  const isVideoButtonDisabled = isLoading || !videoPrompt.trim() || !isApiKeySelected;
 
   const ApiKeyOverlay = () => (
     <div className="flex flex-col items-center justify-center text-center p-8 bg-gray-900/50 rounded-lg border border-gray-700">
@@ -852,12 +1130,11 @@ ${basePrompt}`;
 
   return (
     <div className="min-h-screen bg-gray-900 text-gray-100 flex flex-col items-center p-4 sm:p-6 lg:p-8 relative">
-      <SettingsModal 
-         isOpen={showSettings} 
+      <SettingsModal
+         isOpen={showSettings}
          onClose={() => setShowSettings(false)}
          config={airtableConfig}
          onSave={handleSaveSettings}
-         history={history}
       />
       
       <TemplateLibraryModal
@@ -926,209 +1203,415 @@ ${basePrompt}`;
 
           {view === 'image' && (
             <div className="bg-gray-800/80 p-5 rounded-2xl border border-gray-700 backdrop-blur-sm space-y-5">
-              <div className="flex border-b border-gray-700 pb-1">
-                <button onClick={() => handleImageModeChange('generate')} className={`flex-1 pb-3 text-sm font-medium transition-colors ${imageMode === 'generate' ? 'text-primary border-b-2 border-primary' : 'text-gray-400'}`}>Generate</button>
-                <button onClick={() => handleImageModeChange('sequence')} className={`flex-1 pb-3 text-sm font-medium transition-colors ${imageMode === 'sequence' ? 'text-primary border-b-2 border-primary' : 'text-gray-400'}`}>Sequence</button>
+
+              {/* Shot Count Selector - At Top */}
+              <div className="flex items-center justify-between bg-gray-900/50 p-3 rounded-lg border border-gray-700/50">
+                <label className="text-xs font-bold text-gray-400 uppercase tracking-wider">Number of Shots</label>
+                <select
+                  value={shotCount}
+                  onChange={(e) => setShotCount(parseInt(e.target.value))}
+                  className="bg-gray-800 border border-gray-600 rounded px-3 py-1.5 text-sm text-white"
+                >
+                  <option value={1}>1 Shot</option>
+                  <option value={3}>3 Shots</option>
+                  <option value={5}>5 Shots</option>
+                  <option value={10}>10 Shots</option>
+                </select>
               </div>
-              
-              {imageMode === 'generate' && !isManualMode && (
-                  <>
-                     <div className="bg-gray-900/40 p-3 rounded-lg border border-gray-700/50 space-y-3 relative group">
-                         <div className="flex justify-between items-center">
-                             <h3 className="text-xs font-bold text-gray-400 uppercase tracking-wider">Studio Controls</h3>
-                             <button onClick={() => setShowControlManager(true)} className="text-[10px] text-primary hover:text-white underline">Manage Options</button>
-                         </div>
-                         <div className="grid grid-cols-2 gap-2">
-                             <ControlSelect label="Layout Type" value={layoutStyle} onChange={setLayoutStyle} options={layouts} />
-                             <ControlSelect label="Visual Style" value={visualStyle} onChange={setVisualStyle} options={styles} />
-                         </div>
-                         <div className="grid grid-cols-2 gap-2">
-                             <ControlSelect label="Lighting" value={lighting} onChange={setLighting} options={lightingOpts} />
-                             <ControlSelect label="Camera/Lens" value={camera} onChange={setCamera} options={cameraOpts} />
-                         </div>
-                     </div>
-                  </>
-              )}
 
+              {/* Source Images Section - Always Visible */}
+              <div>
+                <label className="text-xs font-semibold text-gray-400 uppercase tracking-wider block mb-2">
+                  Source Images ({editImages.length}/5) - optional, for editing/combining
+                </label>
 
-              {/* Sequence Mode UI */}
-              {imageMode === 'sequence' && (
-                <>
-                  {/* Source Photo Picker */}
-                  <SourcePhotoPicker
-                    sourcePhotos={sourcePhotos}
-                    selectedPhotos={selectedSourcePhotos}
-                    onSelectionChange={setSelectedSourcePhotos}
-                    maxSelection={5}
-                  />
+                {/* Display uploaded images */}
+                {editImages.length > 0 && (
+                  <div className="flex flex-wrap gap-2 mb-3">
+                    {editImages.map((img, idx) => (
+                      <div key={idx} className="relative group">
+                        <img
+                          src={img.dataUrl!}
+                          alt={`Image ${idx + 1}`}
+                          className="w-20 h-20 object-cover rounded-lg border border-gray-600"
+                        />
+                        <button
+                          onClick={() => setEditImages(prev => prev.filter((_, i) => i !== idx))}
+                          className="absolute -top-2 -right-2 bg-red-600 text-white rounded-full w-5 h-5 flex items-center justify-center text-xs opacity-0 group-hover:opacity-100 transition-opacity"
+                        >
+                          ×
+                        </button>
+                      </div>
+                    ))}
+                  </div>
+                )}
 
-                  {/* Key Subjects */}
-                  <div>
-                    <label className="text-xs font-semibold text-gray-400 uppercase tracking-wider block mb-2">
-                      Key Subject(s) to Maintain Consistency
-                    </label>
-                    <input
-                      type="text"
-                      value={keySubjects}
-                      onChange={(e) => setKeySubjects(e.target.value)}
-                      placeholder="e.g., red sports car, blonde woman in sunglasses"
-                      className="w-full bg-gray-900 border border-gray-600 rounded-lg px-3 py-2 text-sm text-white focus:ring-1 focus:ring-primary outline-none"
-                    />
-                    <p className="text-xs text-gray-500 mt-1">
-                      Describe characters, objects, or elements that should remain consistent across all images.
+                {/* Dropzone for adding images */}
+                {editImages.length < 5 && (
+                  <div
+                    className="border-2 border-dashed border-gray-600 rounded-lg p-3 text-center cursor-pointer hover:border-primary transition-colors"
+                    onClick={() => {
+                      const input = document.createElement('input');
+                      input.type = 'file';
+                      input.accept = 'image/*';
+                      input.multiple = true;
+                      input.onchange = (e) => {
+                        const files = (e.target as HTMLInputElement).files;
+                        if (files) {
+                          Array.from(files).slice(0, 5 - editImages.length).forEach(file => {
+                            const reader = new FileReader();
+                            reader.onloadend = () => {
+                              setEditImages(prev => [...prev, { file, dataUrl: reader.result as string }]);
+                            };
+                            reader.readAsDataURL(file);
+                          });
+                        }
+                      };
+                      input.click();
+                    }}
+                    onDragOver={(e) => { e.preventDefault(); e.stopPropagation(); }}
+                    onDrop={(e) => {
+                      e.preventDefault();
+                      e.stopPropagation();
+                      const files = e.dataTransfer.files;
+                      if (files) {
+                        Array.from(files).slice(0, 5 - editImages.length).forEach(file => {
+                          if (file.type.startsWith('image/')) {
+                            const reader = new FileReader();
+                            reader.onloadend = () => {
+                              setEditImages(prev => [...prev, { file, dataUrl: reader.result as string }]);
+                            };
+                            reader.readAsDataURL(file);
+                          }
+                        });
+                      }
+                    }}
+                  >
+                    <Icon name="image" className="w-6 h-6 mx-auto text-gray-500 mb-1" />
+                    <p className="text-xs text-gray-400">
+                      {editImages.length === 0 ? 'Drop images here or click to upload' : 'Add more images'}
                     </p>
                   </div>
+                )}
 
-                  {/* Shot List Preset Picker */}
-                  <div className="flex items-center justify-between">
-                    <ShotListPresetPicker onApply={handleApplyShotListPreset} />
-                    <span className="text-[10px] text-gray-500">or configure manually below</span>
-                  </div>
+                {editImages.length === 0 && (
+                  <p className="text-[10px] text-gray-500 mt-1 text-center">
+                    Leave empty to generate from scratch, or add images to edit/combine them
+                  </p>
+                )}
+              </div>
 
-                  {/* Number of Images */}
-                  <div>
-                    <label className="text-xs font-semibold text-gray-400 uppercase tracking-wider block mb-2">
-                      Number of Images in Sequence
-                    </label>
-                    <select
-                      value={sequenceImageCount}
-                      onChange={(e) => {
-                        const count = parseInt(e.target.value);
-                        setSequenceImageCount(count);
-                        // Adjust angles array
-                        setSequenceAngles(prev => {
-                          const newAngles = [...prev];
-                          while (newAngles.length < count) newAngles.push('');
-                          return newAngles.slice(0, count);
-                        });
-                      }}
-                      className="w-full bg-gray-900 border border-gray-600 rounded-lg px-3 py-2 text-sm text-white focus:ring-1 focus:ring-primary outline-none"
-                    >
-                      {[2, 3, 4, 5, 6, 7, 8, 9, 10].map(n => (
-                        <option key={n} value={n}>{n} images</option>
-                      ))}
-                    </select>
-                  </div>
-
-                  {/* Angle Inputs */}
-                  <SequenceAngleInputs
-                    imageCount={sequenceImageCount}
-                    angles={sequenceAngles}
-                    onAnglesChange={setSequenceAngles}
-                  />
-
-                  {/* Scene Description */}
-                  <div>
-                    <label className="text-xs font-semibold text-gray-400 uppercase tracking-wider block mb-2">
-                      Scene Description
-                    </label>
-                    <textarea
-                      value={sequencePrompt}
-                      onChange={(e) => setSequencePrompt(e.target.value)}
-                      placeholder="Describe the overall scene or scenario for the sequence..."
-                      className="w-full h-24 bg-gray-900 border border-gray-600 rounded-lg p-3 text-sm text-white focus:ring-2 focus:ring-primary outline-none resize-none"
-                    />
-                  </div>
-
-                  {/* Aesthetics for Sequence */}
-                  <div className="bg-gray-900/40 p-3 rounded-lg border border-gray-700/50 space-y-3">
-                    <h3 className="text-xs font-bold text-gray-400 uppercase tracking-wider">Style Settings (Optional)</h3>
-                    <div className="grid grid-cols-2 gap-2">
-                      <ControlSelect label="Visual Style" value={visualStyle} onChange={setVisualStyle} options={styles} />
-                      <ControlSelect label="Lighting" value={lighting} onChange={setLighting} options={lightingOpts} />
-                    </div>
-                  </div>
-
-                  {/* Progress Display */}
-                  {isGeneratingSequence && (
-                    <SequenceProgress
-                      total={sequenceImageCount}
-                      items={sequenceProgress}
-                      currentIndex={sequenceProgress.findIndex(p => p.status === 'generating')}
-                      message={sequenceProgressMessage}
-                    />
-                  )}
-
-                  {/* Generate Button */}
-                  {!isApiKeySelected ? <ApiKeyOverlay /> : (
-                    <button
-                      onClick={handleGenerateSequence}
-                      disabled={isGeneratingSequence || selectedSourcePhotos.length === 0 || !keySubjects.trim() || !sequencePrompt.trim()}
-                      className={`w-full py-3 rounded-lg font-bold text-white shadow-lg transition-all transform hover:scale-[1.02] flex items-center justify-center gap-2 ${
-                        isGeneratingSequence || selectedSourcePhotos.length === 0 || !keySubjects.trim() || !sequencePrompt.trim()
-                          ? 'bg-gray-700 cursor-not-allowed text-gray-400'
-                          : 'bg-gradient-to-r from-purple-600 to-pink-600 hover:from-purple-500 hover:to-pink-500'
-                      }`}
-                    >
-                      {isGeneratingSequence ? (
-                        <>
-                          <Spinner />
-                          Generating Sequence...
-                        </>
-                      ) : (
-                        <>
-                          <Icon name="sparkles" className="w-5 h-5" />
-                          Generate {sequenceImageCount} Image Sequence
-                        </>
-                      )}
-                    </button>
-                  )}
-                </>
-              )}
-
-              {/* Standard Generate/Edit UI */}
-              {imageMode !== 'sequence' && (
+              {/* Prompt Section - Always Visible */}
               <div>
                 <div className="flex justify-between items-center mb-2">
                    <label className="text-xs font-semibold text-gray-400 uppercase tracking-wider">
-                     {!isManualMode ? 'Content Description' : 'Full Manual Prompt'}
+                     {editImages.length > 0
+                       ? (editImages.length > 1 ? 'Describe how to combine/transform' : 'Describe changes to make')
+                       : (!isManualMode ? 'Content Description' : 'Full Manual Prompt')}
                    </label>
-                   {isManualMode && <button onClick={() => setIsManualMode(false)} className="text-[10px] text-primary hover:text-white underline">Reset to Auto</button>}
+                   {editImages.length === 0 && isManualMode && (
+                     <button onClick={() => setIsManualMode(false)} className="text-[10px] text-primary hover:text-white underline">Reset to Auto</button>
+                   )}
                 </div>
                 <textarea
                   value={userInput}
                   onChange={(e) => setUserInput(e.target.value)}
-                  placeholder={!isManualMode ? "e.g. Sales growth of 20% in Q3..." : "Describe exactly what you want..."}
+                  placeholder={editImages.length > 0
+                    ? (editImages.length > 1
+                        ? "e.g., Combine these images into one scene..."
+                        : "e.g., Add a red hat, change background to beach sunset...")
+                    : (!isManualMode ? "e.g. Sales growth of 20% in Q3..." : "Describe exactly what you want...")}
                   className="w-full h-24 bg-gray-900 border border-gray-600 rounded-lg p-3 text-sm text-white focus:ring-2 focus:ring-primary outline-none resize-none"
                 />
               </div>
-              )}
 
-              {imageMode === 'generate' && !isManualMode && (
-                  <div className="bg-black/40 rounded-lg p-3 border border-gray-700/50">
-                      <div className="flex justify-between items-center mb-1">
-                          <span className="text-[10px] uppercase text-gray-500 font-bold flex items-center gap-1"><Icon name="sparkles" className="w-3 h-3" /> Synthesized Prompt</span>
-                          <button onClick={handleCopyToManual} className="text-[10px] text-primary hover:text-white underline">Edit Manually</button>
-                      </div>
-                      <p className="text-xs text-gray-300 italic leading-relaxed opacity-90 border-l-2 border-primary pl-2">"{finalPrompt}"</p>
+              {/* Style Controls - Always visible when no source images */}
+              {editImages.length === 0 && (
+                <div className="bg-gray-900/50 p-3 rounded-lg border border-gray-700/50 space-y-3">
+                  <h3 className="text-xs font-bold text-gray-400 uppercase tracking-wider">Style Controls</h3>
+                  <div className="grid grid-cols-2 gap-2">
+                    <ControlSelect label="Layout Type" value={layoutStyle} onChange={setLayoutStyle} options={layouts} />
+                    <ControlSelect label="Visual Style" value={visualStyle} onChange={setVisualStyle} options={styles} />
                   </div>
+                  <div className="grid grid-cols-2 gap-2">
+                    <ControlSelect label="Lighting" value={lighting} onChange={setLighting} options={lightingOpts} />
+                    <ControlSelect label="Camera/Lens" value={camera} onChange={setCamera} options={cameraOpts} />
+                  </div>
+                </div>
               )}
 
-              {imageMode !== 'sequence' && (
+              {/* Synthesized Prompt Preview (only for generation mode with auto controls) */}
+              {editImages.length === 0 && !isManualMode && finalPrompt.trim() && (
+                <div className="bg-black/40 rounded-lg p-3 border border-gray-700/50">
+                  <div className="flex justify-between items-center mb-1">
+                    <span className="text-[10px] uppercase text-gray-500 font-bold flex items-center gap-1">
+                      <Icon name="sparkles" className="w-3 h-3" /> Synthesized Prompt
+                    </span>
+                    <button onClick={handleCopyToManual} className="text-[10px] text-primary hover:text-white underline">Edit Manually</button>
+                  </div>
+                  <p className="text-xs text-gray-300 italic leading-relaxed opacity-90 border-l-2 border-primary pl-2">"{finalPrompt}"</p>
+                </div>
+              )}
+
+              {/* Output Settings - Always Visible */}
               <div className="flex gap-2 flex-wrap bg-gray-900/50 p-3 rounded-lg border border-gray-700/50 justify-between">
-                   <ControlSelect label="Aspect Ratio" value={imageAspectRatio} onChange={(v) => setImageAspectRatio(v as any)} options={[{value:'1:1',label:'1:1'},{value:'16:9',label:'16:9'},{value:'9:16',label:'9:16'},{value:'4:3',label:'4:3'}]} />
-                   <ControlSelect label="Resolution" value={imageResolution} onChange={(v) => setImageResolution(v as any)} options={[{value:'1K',label:'1K'},{value:'2K',label:'2K'},{value:'4K',label:'4K'}]} />
+                <ControlSelect label="Aspect Ratio" value={imageAspectRatio} onChange={(v) => setImageAspectRatio(v as any)} options={[{value:'1:1',label:'1:1'},{value:'16:9',label:'16:9'},{value:'9:16',label:'9:16'},{value:'4:3',label:'4:3'}]} />
+                <ControlSelect label="Resolution" value={imageResolution} onChange={(v) => setImageResolution(v as any)} options={[{value:'1K',label:'1K'},{value:'2K',label:'2K'},{value:'4K',label:'4K'}]} />
               </div>
+
+              {/* Shot Configuration Grid - Shows when more than 1 shot selected */}
+              {shotCount > 1 && (
+                <div className="bg-gray-900/50 p-3 rounded-lg border border-gray-700/50">
+                  <label className="text-xs font-bold text-gray-400 uppercase tracking-wider block mb-3">
+                    Per-Shot Settings (Camera, Lens, Background)
+                  </label>
+                  <div className="space-y-3 max-h-[300px] overflow-y-auto pr-2">
+                    {shotConfigs.map((shot, idx) => (
+                      <div
+                        key={shot.id}
+                        className={`p-3 rounded-lg border transition-colors ${
+                          shot.status === 'generating' ? 'bg-blue-900/30 border-blue-500 animate-pulse' :
+                          shot.status === 'completed' ? 'bg-green-900/20 border-green-600' :
+                          shot.status === 'error' ? 'bg-red-900/20 border-red-600' :
+                          'bg-gray-800/50 border-gray-700'
+                        }`}
+                      >
+                        <div className="flex items-center justify-between mb-2">
+                          <span className="text-sm font-bold text-gray-300">Shot {idx + 1}</span>
+                          {shot.status === 'generating' && <Spinner />}
+                          {shot.status === 'completed' && shot.resultUrl && (
+                            <img src={shot.resultUrl} alt={`Shot ${idx + 1}`} className="w-10 h-10 object-cover rounded" />
+                          )}
+                          {shot.status === 'error' && <span className="text-xs text-red-400">Failed</span>}
+                        </div>
+                        <div className="grid grid-cols-3 gap-2">
+                          <select
+                            value={shot.cameraAngle}
+                            onChange={(e) => updateShotConfig(shot.id, 'cameraAngle', e.target.value)}
+                            disabled={isBatchGenerating}
+                            className="bg-gray-900 border border-gray-600 rounded px-2 py-1 text-xs text-white"
+                          >
+                            {CAMERA_ANGLES.map(opt => (
+                              <option key={opt.value} value={opt.value}>{opt.label}</option>
+                            ))}
+                          </select>
+                          <select
+                            value={shot.lens}
+                            onChange={(e) => updateShotConfig(shot.id, 'lens', e.target.value)}
+                            disabled={isBatchGenerating}
+                            className="bg-gray-900 border border-gray-600 rounded px-2 py-1 text-xs text-white"
+                          >
+                            {LENS_PRESETS.map(opt => (
+                              <option key={opt.value} value={opt.value}>{opt.label}</option>
+                            ))}
+                          </select>
+                          <input
+                            type="text"
+                            value={shot.background}
+                            onChange={(e) => updateShotConfig(shot.id, 'background', e.target.value)}
+                            disabled={isBatchGenerating}
+                            placeholder="Background..."
+                            className="bg-gray-900 border border-gray-600 rounded px-2 py-1 text-xs text-white placeholder-gray-500"
+                          />
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                </div>
               )}
 
-              {imageMode !== 'sequence' && (!isApiKeySelected ? <ApiKeyOverlay /> : (
+              {/* Smart Create Button */}
+              {!isApiKeySelected ? <ApiKeyOverlay /> : shotCount > 1 ? (
+                <div className="space-y-2">
+                  <button
+                    onClick={handleBatchGenerate}
+                    disabled={isBatchGenerating || isLoading || (editImages.length === 0 ? !finalPrompt.trim() : !userInput.trim())}
+                    className={`w-full py-3 rounded-lg font-bold text-white shadow-lg transition-all transform hover:scale-[1.02] flex items-center justify-center gap-2 ${
+                      isBatchGenerating || isLoading || (editImages.length === 0 ? !finalPrompt.trim() : !userInput.trim())
+                        ? 'bg-gray-700 cursor-not-allowed text-gray-400'
+                        : 'bg-gradient-to-r from-orange-600 to-amber-600 hover:from-orange-500 hover:to-amber-500'
+                    }`}
+                  >
+                    {isBatchGenerating ? <Spinner /> : <Icon name="sparkles" className="w-5 h-5" />}
+                    {isBatchGenerating
+                      ? `Generating ${shotConfigs.filter(s => s.status === 'completed').length + 1}/${shotCount}...`
+                      : `Generate ${shotCount} Shots`}
+                  </button>
+
+                  {/* Create Video from Batch Button - shows when there are completed shots */}
+                  {shotConfigs.some(s => s.status === 'completed' && s.resultUrl) && (
+                    <button
+                      onClick={handleCreateVideoFromBatch}
+                      disabled={isLoading || isBatchGenerating}
+                      className={`w-full py-2 rounded-lg font-medium text-white shadow-lg transition-all flex items-center justify-center gap-2 ${
+                        isLoading || isBatchGenerating
+                          ? 'bg-gray-700 cursor-not-allowed text-gray-400'
+                          : 'bg-gradient-to-r from-blue-600 to-indigo-600 hover:from-blue-500 hover:to-indigo-500'
+                      }`}
+                    >
+                      {isLoading ? <Spinner /> : <Icon name="sparkles" className="w-4 h-4" />}
+                      {isLoading ? loadingMessage || 'Creating Video...' : 'Create Video from First Shot'}
+                    </button>
+                  )}
+                </div>
+              ) : (
                 <button
-                  onClick={handleGenerateImage}
-                  disabled={isImageButtonDisabled}
-                  className={`w-full py-3 rounded-lg font-bold text-white shadow-lg transition-all transform hover:scale-[1.02] flex items-center justify-center gap-2 ${isImageButtonDisabled ? 'bg-gray-700 cursor-not-allowed text-gray-400' : 'bg-gradient-to-r from-primary to-purple-600 hover:from-primary-hover hover:to-purple-500'}`}
+                  onClick={handleCreateImage}
+                  disabled={isLoading || (editImages.length === 0 ? !finalPrompt.trim() : !userInput.trim())}
+                  className={`w-full py-3 rounded-lg font-bold text-white shadow-lg transition-all transform hover:scale-[1.02] flex items-center justify-center gap-2 ${
+                    isLoading || (editImages.length === 0 ? !finalPrompt.trim() : !userInput.trim())
+                      ? 'bg-gray-700 cursor-not-allowed text-gray-400'
+                      : editImages.length > 0
+                        ? 'bg-gradient-to-r from-blue-600 to-cyan-600 hover:from-blue-500 hover:to-cyan-500'
+                        : 'bg-gradient-to-r from-primary to-purple-600 hover:from-primary-hover hover:to-purple-500'
+                  }`}
                 >
                   {isLoading ? <Spinner /> : <Icon name="sparkles" className="w-5 h-5" />}
-                  {isLoading ? 'Processing...' : 'Generate Asset'}
+                  {isLoading
+                    ? 'Creating...'
+                    : editImages.length === 0
+                      ? 'Generate Image'
+                      : editImages.length === 1
+                        ? 'Transform Image'
+                        : `Create from ${editImages.length} Images`}
                 </button>
-              ))}
+              )}
             </div>
           )}
 
           {view === 'video' && (
-             <div className="bg-gray-800/80 p-5 rounded-2xl border border-gray-700 backdrop-blur-sm space-y-6">
-               <textarea value={videoPrompt} onChange={(e) => setVideoPrompt(e.target.value)} placeholder="Describe video..." className="w-full h-32 bg-gray-900 border border-gray-600 rounded-lg p-3 text-sm text-white focus:ring-2 focus:ring-primary outline-none resize-none" />
+             <div className="bg-gray-800/80 p-5 rounded-2xl border border-gray-700 backdrop-blur-sm space-y-5">
+
+               {/* Title & Subtitle Section */}
+               <div className="bg-gray-900/50 p-3 rounded-lg border border-gray-700/50 space-y-3">
+                 <label className="text-xs font-bold text-gray-400 uppercase tracking-wider block">Text Overlays (Optional)</label>
+                 <input
+                   type="text"
+                   value={videoTitle}
+                   onChange={(e) => setVideoTitle(e.target.value)}
+                   placeholder="Title (e.g. Product Launch 2024)"
+                   className="w-full bg-gray-900 border border-gray-600 rounded-lg px-3 py-2 text-sm text-white focus:ring-1 focus:ring-primary outline-none"
+                 />
+                 <input
+                   type="text"
+                   value={videoSubtitle}
+                   onChange={(e) => setVideoSubtitle(e.target.value)}
+                   placeholder="Subtitle (e.g. Innovation Redefined)"
+                   className="w-full bg-gray-900 border border-gray-600 rounded-lg px-3 py-2 text-sm text-white focus:ring-1 focus:ring-primary outline-none"
+                 />
+               </div>
+
+               {/* Video Description */}
+               <div>
+                 <label className="text-xs font-bold text-gray-400 uppercase tracking-wider block mb-2">Video Description</label>
+                 <textarea
+                   value={videoPrompt}
+                   onChange={(e) => setVideoPrompt(e.target.value)}
+                   placeholder="Describe the video content... (e.g. A sleek product rotating on a pedestal with dramatic lighting)"
+                   className="w-full h-24 bg-gray-900 border border-gray-600 rounded-lg p-3 text-sm text-white focus:ring-2 focus:ring-primary outline-none resize-none"
+                 />
+               </div>
+
+               {/* Start Frame - Compact Preview (Selection happens in right panel) */}
+               <div className="bg-gray-900/50 p-3 rounded-lg border border-gray-700/50">
+                 <div className="flex items-center justify-between mb-2">
+                   <label className="text-xs font-bold text-gray-400 uppercase tracking-wider">Start Frame</label>
+                   {startImage.dataUrl && (
+                     <button
+                       onClick={() => setStartImage({ file: null, dataUrl: null })}
+                       className="text-[10px] text-red-400 hover:text-red-300"
+                     >
+                       Clear
+                     </button>
+                   )}
+                 </div>
+                 {startImage.dataUrl ? (
+                   <div className="flex items-center gap-3 p-2 bg-blue-900/20 rounded-lg border border-blue-500/30">
+                     <img src={startImage.dataUrl} alt="Start frame" className="w-16 h-16 object-cover rounded-lg border-2 border-blue-500" />
+                     <div className="flex-1">
+                       <p className="text-xs text-blue-300 font-medium">Frame Selected</p>
+                       <p className="text-[10px] text-gray-500">Select from gallery on right →</p>
+                     </div>
+                   </div>
+                 ) : (
+                   <div className="flex items-center gap-3">
+                     <button
+                       onClick={() => document.getElementById('video-start-image-input')?.click()}
+                       className="flex-1 border border-dashed border-gray-600 rounded-lg py-2 px-3 text-center hover:border-primary/50 transition-colors"
+                     >
+                       <span className="text-xs text-gray-400">Upload image</span>
+                     </button>
+                     <span className="text-[10px] text-gray-500">or select from gallery →</span>
+                   </div>
+                 )}
+                 <input
+                   id="video-start-image-input"
+                   type="file"
+                   accept="image/*"
+                   className="hidden"
+                   onChange={(e) => {
+                     if (e.target.files?.[0]) {
+                       processAndSetImage(e.target.files[0], setStartImage, false);
+                     }
+                   }}
+                 />
+               </div>
+
+               {/* Production Direction Section */}
+               <div className="bg-gray-900/50 p-3 rounded-lg border border-gray-700/50 space-y-3">
+                 <label className="text-xs font-bold text-gray-400 uppercase tracking-wider block">Production Direction</label>
+                 <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+                   <ControlSelect
+                     label="Camera Movement"
+                     value={videoCameraMovement}
+                     onChange={setVideoCameraMovement}
+                     options={VIDEO_CAMERA_MOVEMENTS}
+                   />
+                   <ControlSelect
+                     label="Pacing"
+                     value={videoPacing}
+                     onChange={setVideoPacing}
+                     options={VIDEO_PACING}
+                   />
+                   <ControlSelect
+                     label="Style"
+                     value={videoStyle}
+                     onChange={setVideoStyle}
+                     options={VIDEO_STYLES}
+                   />
+                 </div>
+               </div>
+
+               {/* Output Settings */}
+               <div className="flex gap-2 flex-wrap bg-gray-900/50 p-3 rounded-lg border border-gray-700/50 justify-between">
+                 <ControlSelect
+                   label="Aspect Ratio"
+                   value={videoAspectRatio}
+                   onChange={(v) => setVideoAspectRatio(v as '16:9' | '9:16')}
+                   options={[{ value: '16:9', label: '16:9 (Landscape)' }, { value: '9:16', label: '9:16 (Portrait)' }]}
+                 />
+                 <ControlSelect
+                   label="Resolution"
+                   value={videoResolution}
+                   onChange={(v) => setVideoResolution(v as '720p' | '1080p')}
+                   options={[{ value: '720p', label: '720p' }, { value: '1080p', label: '1080p' }]}
+                 />
+               </div>
+
+               {/* Generate Button */}
                {!isApiKeySelected ? <ApiKeyOverlay /> : (
-                <button onClick={handleGenerateVideo} disabled={isVideoButtonDisabled} className="w-full py-3 rounded-lg font-bold text-white bg-blue-600">Generate Video</button>
+                 <button
+                   onClick={handleGenerateVideo}
+                   disabled={isVideoButtonDisabled}
+                   className={`w-full py-3 rounded-lg font-bold text-white shadow-lg transition-all transform hover:scale-[1.02] flex items-center justify-center gap-2 ${
+                     isVideoButtonDisabled
+                       ? 'bg-gray-700 cursor-not-allowed text-gray-400'
+                       : 'bg-gradient-to-r from-blue-600 to-indigo-600 hover:from-blue-500 hover:to-indigo-500'
+                   }`}
+                 >
+                   {isLoading ? <Spinner /> : <Icon name="sparkles" className="w-5 h-5" />}
+                   {isLoading ? loadingMessage || 'Generating...' : 'Generate Video'}
+                 </button>
                )}
              </div>
           )}
@@ -1137,6 +1620,88 @@ ${basePrompt}`;
 
         {/* --- RIGHT PANEL --- */}
         <div className="lg:col-span-8 flex flex-col space-y-6">
+
+           {/* Image Selection Gallery - Only shown on Video tab */}
+           {view === 'video' && history.filter(item => item.type === 'image' && item.imageUrl).length > 0 && (
+             <div className="bg-gray-800 rounded-2xl border-2 border-blue-600/50 p-4">
+               <div className="flex items-center justify-between mb-3">
+                 <h3 className="text-sm font-bold text-blue-400 uppercase tracking-wider flex items-center gap-2">
+                   <Icon name="image" className="w-4 h-4" />
+                   Select Start Frame for Video
+                 </h3>
+                 <span className="text-xs text-gray-500">Click an image to use as first frame</span>
+               </div>
+               <div className="grid grid-cols-4 sm:grid-cols-6 md:grid-cols-8 gap-3 max-h-[200px] overflow-y-auto p-1">
+                 {history
+                   .filter(item => item.type === 'image' && item.imageUrl)
+                   .slice(0, 24)
+                   .map((item) => (
+                     <button
+                       key={item.id}
+                       onClick={async () => {
+                         const imageUrl = item.imageUrl!;
+                         if (imageUrl.startsWith('data:')) {
+                           const mimeMatch = imageUrl.match(/data:([^;]+);/);
+                           const mimeType = mimeMatch ? mimeMatch[1] : 'image/png';
+                           const base64Data = imageUrl.split(',')[1];
+                           const byteCharacters = atob(base64Data);
+                           const byteNumbers = new Array(byteCharacters.length);
+                           for (let i = 0; i < byteCharacters.length; i++) {
+                             byteNumbers[i] = byteCharacters.charCodeAt(i);
+                           }
+                           const byteArray = new Uint8Array(byteNumbers);
+                           const blob = new Blob([byteArray], { type: mimeType });
+                           const file = new File([blob], 'start-frame.png', { type: mimeType });
+                           setStartImage({ file, dataUrl: imageUrl });
+                         } else {
+                           try {
+                             const response = await fetch(imageUrl);
+                             const blob = await response.blob();
+                             const file = new File([blob], 'start-frame.png', { type: blob.type || 'image/png' });
+                             const reader = new FileReader();
+                             reader.onloadend = () => {
+                               setStartImage({ file, dataUrl: reader.result as string });
+                             };
+                             reader.readAsDataURL(blob);
+                           } catch (e) {
+                             console.error('Failed to load image:', e);
+                             setError('Failed to load image');
+                           }
+                         }
+                       }}
+                       className={`relative aspect-square rounded-lg overflow-hidden transition-all ${
+                         startImage.dataUrl === item.imageUrl
+                           ? 'ring-4 ring-blue-500 ring-offset-2 ring-offset-gray-800 scale-105 z-10'
+                           : 'hover:ring-2 hover:ring-primary/50 hover:scale-105'
+                       }`}
+                       title={item.prompt.slice(0, 50)}
+                     >
+                       <img
+                         src={item.imageUrl!}
+                         alt={item.prompt.slice(0, 30)}
+                         className="w-full h-full object-cover"
+                       />
+                       {startImage.dataUrl === item.imageUrl && (
+                         <div className="absolute inset-0 bg-blue-500/40 flex items-center justify-center">
+                           <div className="bg-blue-500 rounded-full p-2">
+                             <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5 text-white" viewBox="0 0 20 20" fill="currentColor">
+                               <path fillRule="evenodd" d="M16.707 5.293a1 1 0 010 1.414l-8 8a1 1 0 01-1.414 0l-4-4a1 1 0 011.414-1.414L8 12.586l7.293-7.293a1 1 0 011.414 0z" clipRule="evenodd" />
+                             </svg>
+                           </div>
+                         </div>
+                       )}
+                       <div className="absolute inset-0 bg-gradient-to-t from-black/60 to-transparent opacity-0 hover:opacity-100 transition-opacity flex items-end p-1">
+                         <span className="text-[9px] text-white truncate">{item.prompt.slice(0, 20)}...</span>
+                       </div>
+                     </button>
+                   ))}
+               </div>
+               {!startImage.dataUrl && (
+                 <p className="text-center text-xs text-gray-500 mt-2">No image selected - video will generate from description only</p>
+               )}
+             </div>
+           )}
+
            <div className="flex-grow bg-gray-800 rounded-2xl border border-gray-700 overflow-hidden min-h-[500px] flex flex-col relative">
               {(error || successMsg) && <div className={`w-full p-3 text-sm text-center ${error ? 'bg-red-900/50 text-red-200' : 'bg-green-900/50 text-green-200'}`}>{error || successMsg}</div>}
               <div className="flex-1 flex items-center justify-center p-8 bg-gray-900/50 relative">
@@ -1145,12 +1710,14 @@ ${basePrompt}`;
                  ) : currentHistory.length > 0 ? (
                     <div className="w-full h-full flex flex-col items-center">
                        <div className="relative w-full flex-1 flex items-center justify-center">
-                          {currentHistory[carouselIndex].type === 'image' && currentHistory[carouselIndex].imageUrl ? (
+                          {currentHistory[carouselIndex].type === 'video' && currentHistory[carouselIndex].videoUrl ? (
+                            <VideoPlayer src={currentHistory[carouselIndex].videoUrl!} />
+                          ) : currentHistory[carouselIndex].type === 'image' && currentHistory[carouselIndex].imageUrl ? (
                             <img src={currentHistory[carouselIndex].imageUrl!} className="max-w-full max-h-[500px] object-contain rounded-lg shadow-2xl" />
                           ) : (
                              <div className="flex flex-col items-center text-center p-10 bg-gray-800/50 border-2 border-dashed border-gray-600 max-w-lg">
                                 <Icon name="image" className="w-16 h-16 text-gray-600 mb-4" />
-                                <h3 className="text-xl font-bold text-gray-300 mb-2">Image Not Loaded</h3>
+                                <h3 className="text-xl font-bold text-gray-300 mb-2">Media Not Loaded</h3>
                                 <p className="text-gray-400 mb-6">Upload to 'Attachments' in Airtable.</p>
                              </div>
                           )}
@@ -1166,7 +1733,8 @@ ${basePrompt}`;
                         <button onClick={() => toggleFavorite(currentHistory[carouselIndex].id)} className={`p-2 rounded-lg transition-colors ${currentHistory[carouselIndex].isFavorite ? 'bg-red-500/20 text-red-400' : 'bg-gray-700 text-gray-400 hover:text-white'}`}>
                             <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5" viewBox="0 0 20 20" fill="currentColor"><path fillRule="evenodd" d="M3.172 5.172a4 4 0 015.656 0L10 6.343l1.172-1.171a4 4 0 115.656 5.656L10 17.657l-6.828-6.829a4 4 0 010-5.656z" clipRule="evenodd" /></svg>
                         </button>
-                        <button onClick={() => handleRemix(currentHistory[carouselIndex])} className="px-4 py-2 bg-gray-700 hover:bg-gray-600 text-white rounded-lg text-sm font-medium">Remix / Edit</button>
+                        <button onClick={() => handleRemix(currentHistory[carouselIndex])} className="px-4 py-2 bg-gray-700 hover:bg-gray-600 text-white rounded-lg text-sm font-medium">Remix</button>
+                        <button onClick={() => handleEditFromHistory(currentHistory[carouselIndex])} className="px-4 py-2 bg-blue-700 hover:bg-blue-600 text-white rounded-lg text-sm font-medium">Edit Image</button>
                     </div>
                     <div className="flex gap-2">
                         <button onClick={downloadFavorites} className="px-4 py-2 bg-green-700 hover:bg-green-600 text-white rounded-lg text-sm font-bold flex items-center gap-2">

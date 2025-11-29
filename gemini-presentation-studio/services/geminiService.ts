@@ -259,7 +259,16 @@ export const generateVideoFromPrompt = async (
   if (!response.ok) {
     throw new Error(`Failed to download video: ${response.statusText}`);
   }
-  
+
   const videoBlob = await response.blob();
-  return URL.createObjectURL(videoBlob);
+
+  // Convert blob to base64 data URL for persistent storage
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onloadend = () => {
+      resolve(reader.result as string);
+    };
+    reader.onerror = reject;
+    reader.readAsDataURL(videoBlob);
+  });
 }

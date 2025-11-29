@@ -62,6 +62,79 @@ const uploadToImageHost = async (apiKey: string, base64Image: string): Promise<{
     }
 };
 
+// Helper to convert base64 data URL to a Blob
+const base64ToBlob = (base64DataUrl: string): Blob => {
+    const parts = base64DataUrl.split(',');
+    const mimeMatch = parts[0].match(/:(.*?);/);
+    const mimeType = mimeMatch ? mimeMatch[1] : 'video/mp4';
+    const base64Data = parts[1];
+    const byteCharacters = atob(base64Data);
+    const byteArrays: Uint8Array[] = [];
+
+    for (let offset = 0; offset < byteCharacters.length; offset += 512) {
+        const slice = byteCharacters.slice(offset, offset + 512);
+        const byteNumbers = new Array(slice.length);
+        for (let i = 0; i < slice.length; i++) {
+            byteNumbers[i] = slice.charCodeAt(i);
+        }
+        byteArrays.push(new Uint8Array(byteNumbers));
+    }
+
+    return new Blob(byteArrays, { type: mimeType });
+};
+
+// Upload video to file.io (temporary hosting) - free, no API key needed
+const uploadVideoToFileIO = async (base64Video: string): Promise<{ url: string | null; error?: string }> => {
+    try {
+        const blob = base64ToBlob(base64Video);
+        const formData = new FormData();
+        formData.append('file', blob, `video-${Date.now()}.mp4`);
+
+        const response = await fetch('https://file.io', {
+            method: 'POST',
+            body: formData,
+        });
+
+        if (!response.ok) {
+            return { url: null, error: `HTTP ${response.status}` };
+        }
+
+        const data = await response.json();
+        if (data.success && data.link) {
+            return { url: data.link };
+        }
+        return { url: null, error: data.message || "File.io upload failed" };
+    } catch (e: any) {
+        return { url: null, error: e.message || "Network error uploading video" };
+    }
+};
+
+// Upload video to 0x0.st (permanent hosting) - free, no API key needed
+const uploadVideoTo0x0 = async (base64Video: string): Promise<{ url: string | null; error?: string }> => {
+    try {
+        const blob = base64ToBlob(base64Video);
+        const formData = new FormData();
+        formData.append('file', blob, `video-${Date.now()}.mp4`);
+
+        const response = await fetch('https://0x0.st', {
+            method: 'POST',
+            body: formData,
+        });
+
+        if (!response.ok) {
+            return { url: null, error: `HTTP ${response.status}` };
+        }
+
+        const url = await response.text();
+        if (url && url.startsWith('http')) {
+            return { url: url.trim() };
+        }
+        return { url: null, error: "0x0.st upload failed" };
+    } catch (e: any) {
+        return { url: null, error: e.message || "Network error uploading video" };
+    }
+};
+
 export const saveRecordToAirtable = async (
     config: AirtableConfig,
     data: {
@@ -75,6 +148,7 @@ export const saveRecordToAirtable = async (
         resolution?: string;
         isFavorite?: boolean;
         imageData?: string | null;
+        videoData?: string | null;
         lighting?: string;
         camera?: string;
         rawInput?: string;
@@ -104,9 +178,9 @@ export const saveRecordToAirtable = async (
         keySub: data.keySubjects,
         angle: data.angleDescription
     };
-    
+
     const cleanMetadata = Object.fromEntries(Object.entries(metadata).filter(([_, v]) => v != null && v !== ''));
-    
+
     let combinedPrompt = data.prompt;
     if (Object.keys(cleanMetadata).length > 0) {
         combinedPrompt = `${data.prompt} ||| ${JSON.stringify(cleanMetadata)}`;
@@ -115,7 +189,7 @@ export const saveRecordToAirtable = async (
     const fields: any = {
         "Topic": data.topic || "Uncategorized",
         "Campaign": data.campaign || "General",
-        "Prompt": combinedPrompt, 
+        "Prompt": combinedPrompt,
         "Type": formattedType,
         "Style": data.style || "N/A",
         "Layout": data.layout || "N/A",
@@ -126,6 +200,7 @@ export const saveRecordToAirtable = async (
 
     let uploadError = "";
 
+    // Handle image upload
     if (config.imgbbApiKey && data.imageData && data.type === 'image') {
         const result = await uploadToImageHost(config.imgbbApiKey, data.imageData);
         if (result.url) {
@@ -133,6 +208,19 @@ export const saveRecordToAirtable = async (
         } else if (result.error) {
             uploadError = result.error;
             console.warn("Image bridge failed:", result.error);
+        }
+    }
+
+    // Handle video upload using 0x0.st (free, permanent hosting)
+    if (data.videoData && data.type === 'video') {
+        console.log("Uploading video to 0x0.st...");
+        const result = await uploadVideoTo0x0(data.videoData);
+        if (result.url) {
+            fields["Attachments"] = [{ url: result.url }];
+            console.log("Video uploaded successfully:", result.url);
+        } else if (result.error) {
+            uploadError = result.error;
+            console.warn("Video upload failed:", result.error);
         }
     }
 
