@@ -33,6 +33,51 @@ This application allows users to generate high-fidelity images, diagrams, and vi
    npm run dev
    ```
 
+## Environment Variables
+
+Create a `.env.local` file in the project root with your API keys:
+
+```bash
+GEMINI_API_KEY=your_gemini_api_key_here
+API_KEY=your_gemini_api_key_here
+VITE_AIRTABLE_API_KEY=your_airtable_api_key_here
+VITE_AIRTABLE_BASE_ID=your_airtable_base_id_here
+VITE_AIRTABLE_TABLE_NAME=Generations
+VITE_IMGBB_API_KEY=your_imgbb_api_key_here
+```
+
+### Troubleshooting: API Key Quota Errors
+
+If you see errors like `"You exceeded your current quota"` with `free_tier_requests, limit: 0`, check the following:
+
+1. **Shell environment variables may override `.env.local`**
+
+   Vite loads environment variables in this order (later overrides earlier):
+   - `.env.local` file
+   - Shell environment variables (e.g., from `~/.zshrc` or `~/.bashrc`)
+
+   Check if you have a conflicting key set in your shell:
+   ```bash
+   echo $GEMINI_API_KEY
+   ```
+
+   If this shows a different key than your `.env.local`, remove it from your shell config:
+   ```bash
+   # Check these files for GEMINI_API_KEY exports:
+   grep GEMINI_API_KEY ~/.zshrc ~/.bashrc ~/.bash_profile
+   ```
+
+2. **Verify the correct key is loaded**
+
+   When the dev server starts, check the console output:
+   ```
+   [VITE CONFIG] GEMINI_API_KEY: AIzaSyXXXXX...
+   ```
+
+   Ensure this matches your paid-tier API key.
+
+3. **Restart the dev server** after making any changes to environment variables.
+
 ## Configuration
 
 Click the **Settings (Gear Icon)** in the top right to configure:

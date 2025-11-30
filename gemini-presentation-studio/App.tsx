@@ -15,6 +15,7 @@ import ControlManagerModal from './components/ControlManagerModal';
 import Suggestions from './components/Suggestions';
 import HistoryFeed from './components/HistoryFeed';
 import SourceLibraryTab from './components/SourceLibraryTab';
+import NanoBananaTab from './components/NanoBananaTab';
 import { PromptTemplate, TEMPLATE_CATEGORIES } from './data/templates';
 
 interface ImageState {
@@ -130,7 +131,7 @@ const VIDEO_STYLES = [
   { value: 'artistic experimental', label: 'Experimental' },
 ];
 
-type View = 'source' | 'image' | 'video';
+type View = 'source' | 'image' | 'video' | 'prompts';
 
 // Default Fallbacks
 const DEFAULT_LAYOUTS = [
@@ -400,7 +401,7 @@ const App: React.FC = () => {
   };
   
   const currentHistory = history.filter(item => {
-    if (view === 'source') return false; // Source Library has no history
+    if (view === 'source' || view === 'prompts') return false; // Source Library and Prompts have no history
     return item.type === (view === 'image' ? 'image' : 'video');
   });
   
@@ -678,6 +679,9 @@ const App: React.FC = () => {
         ? `Image ${actionType.toLowerCase()}ed successfully!`
         : "Image generated successfully!");
 
+      // Reset to single shot mode after successful generation
+      setShotCount(1);
+
     } catch (e) {
       handleApiError(e);
     } finally {
@@ -810,6 +814,9 @@ const App: React.FC = () => {
     setIsBatchGenerating(false);
     const completedCount = shotConfigs.filter(s => s.status === 'completed').length;
     setSuccessMsg(`Batch complete! ${completedCount}/${shotConfigs.length} shots generated.`);
+
+    // Reset to single shot mode after batch completes
+    setShotCount(1);
   };
 
   // Create video from first completed batch shot
@@ -1169,6 +1176,7 @@ const App: React.FC = () => {
           <button onClick={() => setView('source')} className={`px-4 py-2 rounded-md text-sm font-medium transition-all ${view === 'source' ? 'bg-primary text-white shadow-lg' : 'text-gray-400 hover:text-white'}`}>Source Library</button>
           <button onClick={() => setView('image')} className={`px-4 py-2 rounded-md text-sm font-medium transition-all ${view === 'image' ? 'bg-primary text-white shadow-lg' : 'text-gray-400 hover:text-white'}`}>Image Studio</button>
           <button onClick={() => setView('video')} className={`px-4 py-2 rounded-md text-sm font-medium transition-all ${view === 'video' ? 'bg-primary text-white shadow-lg' : 'text-gray-400 hover:text-white'}`}>Video Studio</button>
+          <button onClick={() => setView('prompts')} className={`px-4 py-2 rounded-md text-sm font-medium transition-all ${view === 'prompts' ? 'bg-primary text-white shadow-lg' : 'text-gray-400 hover:text-white'}`}>Prompts</button>
         </div>
       </div>
 
@@ -1186,8 +1194,19 @@ const App: React.FC = () => {
         </div>
       )}
 
+      {/* Prompts Library Tab - Full Width */}
+      {view === 'prompts' && (
+        <div className="w-full max-w-6xl">
+          <NanoBananaTab
+            airtableApiKey={airtableConfig.apiKey}
+            airtableBaseId={airtableConfig.baseId}
+            githubToken={import.meta.env.VITE_GITHUB_TOKEN}
+          />
+        </div>
+      )}
+
       {/* Image & Video Studio Layout */}
-      {view !== 'source' && (
+      {(view === 'image' || view === 'video') && (
       <div className="grid grid-cols-1 lg:grid-cols-12 gap-8 w-full max-w-6xl">
         <div className="lg:col-span-4 space-y-6" id="input-panel">
 
