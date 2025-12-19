@@ -69,7 +69,7 @@ const base64ToBlob = (base64DataUrl: string): Blob => {
     const mimeType = mimeMatch ? mimeMatch[1] : 'video/mp4';
     const base64Data = parts[1];
     const byteCharacters = atob(base64Data);
-    const byteArrays: Uint8Array[] = [];
+    const buffers: ArrayBuffer[] = [];
 
     for (let offset = 0; offset < byteCharacters.length; offset += 512) {
         const slice = byteCharacters.slice(offset, offset + 512);
@@ -77,10 +77,10 @@ const base64ToBlob = (base64DataUrl: string): Blob => {
         for (let i = 0; i < slice.length; i++) {
             byteNumbers[i] = slice.charCodeAt(i);
         }
-        byteArrays.push(new Uint8Array(byteNumbers));
+        buffers.push(new Uint8Array(byteNumbers).buffer);
     }
 
-    return new Blob(byteArrays, { type: mimeType });
+    return new Blob(buffers, { type: mimeType });
 };
 
 // Upload video to file.io (temporary hosting) - free, no API key needed

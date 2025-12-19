@@ -39,7 +39,6 @@ Create a `.env.local` file in the project root with your API keys:
 
 ```bash
 GEMINI_API_KEY=your_gemini_api_key_here
-API_KEY=your_gemini_api_key_here
 VITE_AIRTABLE_API_KEY=your_airtable_api_key_here
 VITE_AIRTABLE_BASE_ID=your_airtable_base_id_here
 VITE_AIRTABLE_TABLE_NAME=Generations

@@ -449,7 +449,7 @@ const App: React.FC = () => {
     reader.readAsDataURL(file);
   }, [setError, setSuggestions]);
 
-  const pasteHandlerRef = useRef<(event: ClipboardEvent) => void>();
+  const pasteHandlerRef = useRef<((event: ClipboardEvent) => void) | null>(null);
 
   useEffect(() => {
     pasteHandlerRef.current = (event: ClipboardEvent) => {

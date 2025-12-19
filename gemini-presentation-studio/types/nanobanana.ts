@@ -74,6 +74,8 @@ export const DEFAULT_GITHUB_SOURCES: Omit<GitHubSource, 'id' | 'promptCount' | '
 
 // Category detection keywords
 export const CATEGORY_KEYWORDS: Record<NanoBananaCategory, string[]> = {
+  'Photorealistic': ['photorealistic', 'photo', 'realistic', 'dslr', 'cinematic', 'bokeh', 'highly detailed'],
+  'Infographic': ['infographic', 'diagram', 'chart', 'graph', 'flowchart', 'timeline', 'data viz', 'dataviz'],
   'Portrait & Character': ['portrait', 'headshot', 'face', 'person', 'character', 'avatar', 'selfie', 'chibi'],
   'Product & Mockup': ['product', 'mockup', 'packaging', 'bottle', 'box', 'e-commerce', 'commercial'],
   'Style Transfer': ['style', 'transfer', 'artistic', 'painting', 'convert', 'transform'],

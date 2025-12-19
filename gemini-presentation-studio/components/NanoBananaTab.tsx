@@ -175,7 +175,7 @@ const NanoBananaTab: React.FC<NanoBananaTabProps> = ({
 
   const findSimilar = useCallback((caseItem: NanoBananaCase) => {
     // Search by category and first tag
-    const searchTerms = [caseItem.category];
+    const searchTerms: string[] = [caseItem.category];
     if (caseItem.tags.length > 0) {
       searchTerms.push(caseItem.tags[0]);
     }

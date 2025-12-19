@@ -2,13 +2,13 @@ import { GoogleGenAI, Modality, Type } from "@google/genai";
 
 const getAiClient = () => {
   // The API key is injected from the environment and should not be hardcoded.
-  if (!process.env.API_KEY) {
-    throw new Error("API_KEY environment variable not set. Please configure it in your environment.");
+  if (!process.env.GEMINI_API_KEY) {
+    throw new Error("GEMINI_API_KEY environment variable not set. Please configure it in your environment.");
   }
   // Debug: Log first/last 4 chars of API key
-  const key = process.env.API_KEY;
+  const key = process.env.GEMINI_API_KEY;
   console.log(`[DEBUG] Using API key: ${key.substring(0, 8)}...${key.substring(key.length - 4)}`);
-  return new GoogleGenAI({ apiKey: process.env.API_KEY });
+  return new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
 }
 
 const processImageResponse = (response: any): string => {
@@ -255,7 +255,7 @@ export const generateVideoFromPrompt = async (
   onProgress("Downloading your video...");
 
   // The download link requires the API key.
-  const response = await fetch(`${downloadLink}&key=${process.env.API_KEY}`);
+  const response = await fetch(`${downloadLink}&key=${process.env.GEMINI_API_KEY}`);
   if (!response.ok) {
     throw new Error(`Failed to download video: ${response.statusText}`);
   }

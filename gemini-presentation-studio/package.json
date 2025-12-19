@@ -10,7 +10,7 @@
   "dependencies": {
     "@google/genai": "^1.29.0",
     "clsx": "^2.0.0",
-    "lucide-react": "^0.263.1",
+    "lucide-react": "^0.562.0",
     "react": "^19.2.0",
     "react-dom": "^19.2.0",
     "tailwind-merge": "^1.14.0"
