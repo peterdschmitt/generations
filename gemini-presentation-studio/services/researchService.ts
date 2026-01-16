@@ -145,7 +145,7 @@ const detectSourceType = (url: string): SourceType => {
 
   if (lowerUrl.includes('reddit.com')) return 'reddit';
   if (lowerUrl.includes('youtube.com') || lowerUrl.includes('youtu.be')) return 'youtube';
-  if (lowerUrl.includes('arxiv.org') || lowerUrl.includes('scholar.google')) return 'paper';
+  if (lowerUrl.includes('arxiv.org') || lowerUrl.includes('scholar.google')) return 'academic';
   if (lowerUrl.includes('medium.com') || lowerUrl.includes('substack.com')) return 'article';
 
   return 'article';

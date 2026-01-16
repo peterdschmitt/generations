@@ -42,7 +42,7 @@ export interface ExtractedTalkingPoint {
 export interface ScopingQuestion {
   id: string;
   question: string;
-  placeholder: string;
+  placeholder?: string;
   required: boolean;
   type?: 'text' | 'select' | 'multi-select' | 'slider';
   options?: { value: string; label: string }[];
