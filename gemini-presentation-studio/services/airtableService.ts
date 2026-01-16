@@ -211,17 +211,12 @@ export const saveRecordToAirtable = async (
         }
     }
 
-    // Handle video upload using 0x0.st (free, permanent hosting)
+    // Video upload disabled - 0x0.st doesn't support browser uploads (CORS)
+    // Videos are saved locally in IndexedDB and can be downloaded from the app
     if (data.videoData && data.type === 'video') {
-        console.log("Uploading video to 0x0.st...");
-        const result = await uploadVideoTo0x0(data.videoData);
-        if (result.url) {
-            fields["Attachments"] = [{ url: result.url }];
-            console.log("Video uploaded successfully:", result.url);
-        } else if (result.error) {
-            uploadError = result.error;
-            console.warn("Video upload failed:", result.error);
-        }
+        console.log("Video saved locally. Airtable will store metadata only (no attachment).");
+        // Note: To attach videos to Airtable, you would need a backend server
+        // or a video hosting service with CORS support (e.g., Cloudflare Stream, api.video)
     }
 
     const payload = { fields: fields, typecast: true };
@@ -238,8 +233,10 @@ export const saveRecordToAirtable = async (
     }
     const responseData = await response.json();
     
+    // Return the record ID even if upload failed - video is still saved locally
+    // Just log the warning, don't throw since the main save succeeded
     if (uploadError) {
-        throw new Error(`Saved to Airtable, but Image Upload Failed: ${uploadError}`);
+        console.warn(`Airtable record saved, but media upload failed: ${uploadError}`);
     }
 
     return responseData.id;

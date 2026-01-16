@@ -66,6 +66,12 @@ If you see errors like `"You exceeded your current quota"` with `free_tier_reque
    grep GEMINI_API_KEY ~/.zshrc ~/.bashrc ~/.bash_profile
    ```
 
+   **Permanent fix**: If the variable keeps coming back (e.g., from VSCode or a parent process), add this to your `~/.zshrc`:
+   ```bash
+   # Clear any inherited GEMINI_API_KEY to use .env.local instead
+   unset GEMINI_API_KEY
+   ```
+
 2. **Verify the correct key is loaded**
 
    When the dev server starts, check the console output:

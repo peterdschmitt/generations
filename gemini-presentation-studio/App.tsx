@@ -16,6 +16,11 @@ import Suggestions from './components/Suggestions';
 import HistoryFeed from './components/HistoryFeed';
 import SourceLibraryTab from './components/SourceLibraryTab';
 import NanoBananaTab from './components/NanoBananaTab';
+import ContentFlowResearchTab from './components/ContentFlowResearchTab';
+import ContentFlowCurateTab from './components/ContentFlowCurateTab';
+import ContentFlowDraftTab from './components/ContentFlowDraftTab';
+import ContentFlowExportTab from './components/ContentFlowExportTab';
+import { CFProject } from './types/contentFlow';
 import { PromptTemplate, TEMPLATE_CATEGORIES } from './data/templates';
 
 interface ImageState {
@@ -131,7 +136,7 @@ const VIDEO_STYLES = [
   { value: 'artistic experimental', label: 'Experimental' },
 ];
 
-type View = 'source' | 'image' | 'video' | 'prompts';
+type View = 'source' | 'image' | 'video' | 'prompts' | 'cf-research' | 'cf-curate' | 'cf-draft' | 'cf-export';
 
 // Default Fallbacks
 const DEFAULT_LAYOUTS = [
@@ -258,6 +263,8 @@ const App: React.FC = () => {
   const [isSourcePhotosLoading, setIsSourcePhotosLoading] = useState(false);
   const [sourcePhotoError, setSourcePhotoError] = useState<string | null>(null);
 
+  // ContentFlow State
+  const [cfProject, setCfProject] = useState<CFProject | null>(null);
 
   // --- Synthesizer Logic ---
   const getConstructedPrompt = useCallback(() => {
@@ -966,6 +973,20 @@ const App: React.FC = () => {
         setLoadingMessage("Generating video...");
         const videoUrl = await generateVideoFromPrompt(enhancedPrompt, setLoadingMessage, startImagePayload, videoAspectRatio, videoResolution);
 
+        // Auto-download video to local drive
+        setLoadingMessage("Saving video to Downloads...");
+        const timestamp = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
+        const sanitizedTopic = (topic.trim() || 'video').replace(/[^a-zA-Z0-9]/g, '_').slice(0, 30);
+        const filename = `${sanitizedTopic}_${timestamp}.mp4`;
+
+        const downloadLink = document.createElement('a');
+        downloadLink.href = videoUrl;
+        downloadLink.download = filename;
+        document.body.appendChild(downloadLink);
+        downloadLink.click();
+        document.body.removeChild(downloadLink);
+        console.log(`Video auto-saved as: ${filename}`);
+
         const tempId = `temp-${Date.now()}`;
         const newHistoryItem: HistoryItem = {
           id: tempId,
@@ -1171,12 +1192,22 @@ const App: React.FC = () => {
         </div>
       </header>
       
-      <div className="w-full max-w-md mb-8 flex justify-center">
+      <div className="w-full max-w-4xl mb-8 flex flex-col items-center gap-2">
+        {/* Main Studio Tabs */}
         <div className="bg-gray-800 p-1 rounded-lg inline-flex items-center space-x-1 border border-gray-700">
           <button onClick={() => setView('source')} className={`px-4 py-2 rounded-md text-sm font-medium transition-all ${view === 'source' ? 'bg-primary text-white shadow-lg' : 'text-gray-400 hover:text-white'}`}>Source Library</button>
           <button onClick={() => setView('image')} className={`px-4 py-2 rounded-md text-sm font-medium transition-all ${view === 'image' ? 'bg-primary text-white shadow-lg' : 'text-gray-400 hover:text-white'}`}>Image Studio</button>
           <button onClick={() => setView('video')} className={`px-4 py-2 rounded-md text-sm font-medium transition-all ${view === 'video' ? 'bg-primary text-white shadow-lg' : 'text-gray-400 hover:text-white'}`}>Video Studio</button>
           <button onClick={() => setView('prompts')} className={`px-4 py-2 rounded-md text-sm font-medium transition-all ${view === 'prompts' ? 'bg-primary text-white shadow-lg' : 'text-gray-400 hover:text-white'}`}>Prompts</button>
+        </div>
+
+        {/* ContentFlow Tabs */}
+        <div className="bg-gradient-to-r from-purple-900/30 to-indigo-900/30 p-1 rounded-lg inline-flex items-center space-x-1 border border-purple-600/30">
+          <span className="px-2 text-xs text-purple-400 font-semibold">ContentFlow:</span>
+          <button onClick={() => setView('cf-research')} className={`px-3 py-1.5 rounded-md text-sm font-medium transition-all ${view === 'cf-research' ? 'bg-purple-600 text-white shadow-lg' : 'text-purple-300 hover:text-white'}`}>Research</button>
+          <button onClick={() => setView('cf-curate')} className={`px-3 py-1.5 rounded-md text-sm font-medium transition-all ${view === 'cf-curate' ? 'bg-purple-600 text-white shadow-lg' : 'text-purple-300 hover:text-white'}`}>Curate</button>
+          <button onClick={() => setView('cf-draft')} className={`px-3 py-1.5 rounded-md text-sm font-medium transition-all ${view === 'cf-draft' ? 'bg-purple-600 text-white shadow-lg' : 'text-purple-300 hover:text-white'}`}>Draft</button>
+          <button onClick={() => setView('cf-export')} className={`px-3 py-1.5 rounded-md text-sm font-medium transition-all ${view === 'cf-export' ? 'bg-purple-600 text-white shadow-lg' : 'text-purple-300 hover:text-white'}`}>Export</button>
         </div>
       </div>
 
@@ -1201,6 +1232,52 @@ const App: React.FC = () => {
             airtableApiKey={airtableConfig.apiKey}
             airtableBaseId={airtableConfig.baseId}
             githubToken={import.meta.env.VITE_GITHUB_TOKEN}
+          />
+        </div>
+      )}
+
+      {/* ContentFlow Research Tab */}
+      {view === 'cf-research' && (
+        <div className="w-full max-w-6xl">
+          <ContentFlowResearchTab
+            config={airtableConfig}
+            onSelectProject={(project) => setCfProject(project)}
+            onNavigateToCurate={() => setView('cf-curate')}
+          />
+        </div>
+      )}
+
+      {/* ContentFlow Curate Tab */}
+      {view === 'cf-curate' && (
+        <div className="w-full max-w-6xl">
+          <ContentFlowCurateTab
+            config={airtableConfig}
+            project={cfProject}
+            onNavigateToDraft={() => setView('cf-draft')}
+            onBack={() => setView('cf-research')}
+          />
+        </div>
+      )}
+
+      {/* ContentFlow Draft Tab */}
+      {view === 'cf-draft' && (
+        <div className="w-full max-w-6xl">
+          <ContentFlowDraftTab
+            config={airtableConfig}
+            project={cfProject}
+            onBack={() => setView('cf-curate')}
+            onNavigateToExport={() => setView('cf-export')}
+          />
+        </div>
+      )}
+
+      {/* ContentFlow Export Tab */}
+      {view === 'cf-export' && (
+        <div className="w-full max-w-6xl">
+          <ContentFlowExportTab
+            config={airtableConfig}
+            project={cfProject}
+            onBack={() => setView('cf-draft')}
           />
         </div>
       )}

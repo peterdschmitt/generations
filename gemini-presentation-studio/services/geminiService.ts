@@ -247,9 +247,25 @@ export const generateVideoFromPrompt = async (
 
   onProgress("Finalizing video...");
 
+  // Debug: log the full operation response to understand the structure
+  console.log("[DEBUG] Video operation response:", JSON.stringify(operation, null, 2));
+
   const downloadLink = operation.response?.generatedVideos?.[0]?.video?.uri;
   if (!downloadLink) {
-    throw new Error("Video generation completed, but no download link was found.");
+    // Log more details about what we received
+    console.error("[DEBUG] No download link found. Operation structure:", {
+      done: operation.done,
+      hasResponse: !!operation.response,
+      generatedVideos: operation.response?.generatedVideos,
+      error: operation.error
+    });
+
+    // Check if there's an error in the operation
+    if (operation.error) {
+      throw new Error(`Video generation failed: ${operation.error.message || JSON.stringify(operation.error)}`);
+    }
+
+    throw new Error("Video generation completed, but no download link was found. Check console for details.");
   }
 
   onProgress("Downloading your video...");
